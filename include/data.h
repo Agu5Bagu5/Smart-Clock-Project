@@ -1,79 +1,110 @@
-#include <Arduino.h>
 #ifndef DATA_H
 #define DATA_H
 
+#include <Arduino.h>
+
+// ─── EEPROM low-level ────────────────────────────────────────────────────────
 void writeEEPROM(int address, byte data);
 byte readEEPROM(int address);
 
-// Schedule
+// ─── Schedule ────────────────────────────────────────────────────────────────
 
-void addSchedule(byte hour, byte minute, byte day, byte month, byte category, byte subject, byte flags, byte interval);
-void deleteSchedule();
+/*  EEPROM layout per slot (7 bytes each, starting at base address 860):
+ *   offset 0 : hour
+ *   offset 1 : minute
+ *   offset 2 : day    (1-31 = once, 0 = daily, 51-57 = weekly, 101-131 = yearly)
+ *   offset 3 : month
+ *   offset 4 : category
+ *   offset 5 : flags  (0 = inactive / slot free, 0xFF = end-of-list sentinel)
+ *   offset 6 : subject id
+ */
+#define SCHEDULE_BASE 860
+#define SCHEDULE_SLOT 7
+#define SCHEDULE_MAX_EEPROM 100 // reduced from 200 to save iteration time
+#define SCHEDULE_MAX_RAM 20     // reduced from 50 — Uno has only 2 KB SRAM
+
+void addSchedule(byte hour, byte minute, byte day, byte month,
+                 byte category, byte subject, byte flags, byte interval);
+void deleteSchedule(int index);
 void getSchedules();
 
 struct Schedule
 {
     byte hour;
     byte minute;
-    byte day; // 1-31: once only, 0: daily, 51 - 57: weekly (1-7), 101 - 131: yearly (1-31)
+    byte day;
     byte month;
     byte category;
-    byte flags; // Bit -1: No more data behind, Bit 0: inActive, Bit 1: On Time Reminder, Bit 2: - 1 hour, Bit 3: - 24 hours
+    byte flags;
     byte subject;
 };
 
-enum Flags
+// flags values
+#define FLAG_END_OF_LIST 0xFF // no more data beyond this slot
+#define FLAG_INACTIVE 0x00    // slot is free / deleted
+
+enum Interval : byte
 {
-    NO_MORE = -1,
-    INACTIVE = 0,
+    ONCE_ONLY = 0,
+    DAILY = 1,
+    WEEKLY = 2,
+    YEARLY = 3
+};
+
+// reminder flag values stored in flags field when active
+enum ReminderFlag : byte
+{
     ON_TIME = 1,
     ONE_HOUR_BEFORE = 2,
     ONE_DAY_BEFORE = 3
-};
-
-enum Interval
-{
-    ONCE_ONLY,
-    DAILY,
-    WEEKLY,
-    YEARLY
 };
 
 struct ScheduleRAM
 {
     byte hour;
     byte minute;
-    byte day; // 0 -> today, 1 -> tomorrow
+    byte day; // 0 = today, 1 = tomorrow
     byte flags;
     byte category;
     byte subject;
 };
 
-extern ScheduleRAM todaySchedules[50]; // Array untuk menyimpan jadwal, maksimal 50 jadwal
+extern ScheduleRAM todaySchedules[SCHEDULE_MAX_RAM];
+extern byte todayScheduleCount; // how many valid entries are in todaySchedules
 
-// Subject
+// ─── Subject ─────────────────────────────────────────────────────────────────
 
-void addSubject(byte category, byte subjectId, char *subject);
-void deleteSubject();
+/*  EEPROM layout per slot (16 bytes each, starting at address 0):
+ *   offset 0  : (unused / alignment)
+ *   offset 1  : category  (0xFF = end-of-list sentinel, 0xFE = deleted)
+ *   offset 2  : subjectId
+ *   offset 3…16 : subject name (14 chars, null-terminated)
+ */
+#define SUBJECT_BASE 0
+#define SUBJECT_SLOT 16
+#define SUBJECT_MAX_EEPROM 50
+#define SUBJECT_MAX_RAM 20 // reduced from 50
+
+void addSubject(byte category, byte subjectId, const char *subject);
 void getSubjects();
 
 struct Subject
 {
-    byte category; // -1: nonActive
+    byte category;
     byte subjectId;
     char subject[14];
 };
 
-extern Subject subjects[50]; // Array untuk menyimpan kegiatan, maksimal 50 kegiatan
+extern Subject subjects[SUBJECT_MAX_RAM];
+extern byte subjectCount; // how many valid entries are in subjects[]
 
-// Category
-
-enum Category
+// ─── Category ────────────────────────────────────────────────────────────────
+enum Category : byte
 {
-    HOMEWORK,
-    EXAM,
-    PERSONAL,
-    OTHER,
+    HOMEWORK = 0,
+    EXAM = 1,
+    PERSONAL = 2,
+    OTHER = 3
 };
 
-#endif
+#endif // DATA_H

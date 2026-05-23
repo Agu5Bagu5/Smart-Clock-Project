@@ -1,60 +1,111 @@
 #include <Arduino.h>
-#include <data.h>
+#include "data.h"
 #include "time-date.h"
+
+ScheduleRAM todaySchedules[SCHEDULE_MAX_RAM];
+byte todayScheduleCount = 0;
 
 void getSchedules()
 {
-    // Logika untuk mengambil jadwal dari EEPROM dan menampilkannya
-    int todayIndex = 0; // Indeks untuk menyimpan jadwal hari ini
-    for (int i = 0; i < 200; i++)
-    {
-        // Contoh membaca jadwal dari EEPROM
-        byte flags = readEEPROM(i * 7 + 863 + 5); // Alamat untuk flags
-        if (flags != 0)                           // Cek apakah slot jadwal ini terisi
-        {
-            byte scheduleDay = readEEPROM(i * 7 + 863 + 2);
-            bool isOnce = true;
-            if (scheduleDay > 100 && scheduleDay < 132) // Jika day 101-131, berarti jadwal ini untuk setiap tahun, jadi kita set day ke hari ini untuk memudahkan pengecekan
-            {
-                scheduleDay = scheduleDay - 100;
-                isOnce = false;
-            }
-            byte scheduleMonth = readEEPROM(i * 7 + 863 + 3);
-            if ((scheduleDay == nowTime.day() && scheduleMonth == nowTime.month()) || scheduleDay == 0 || (scheduleDay > 50 && scheduleDay < 58 && scheduleMonth - 50 == nowTime.dayOfTheWeek())) // Cek apakah jadwal ini untuk hari ini atau setiap hari
-            {
-                // Jika jadwal sesuai dengan hari dan bulan yang diminta, tampilkan atau simpan untuk ditampilkan
-                todaySchedules[todayIndex].hour = readEEPROM(i * 7 + 863 + 0);
-                todaySchedules[todayIndex].minute = readEEPROM(i * 7 + 863 + 1);
-                todaySchedules[todayIndex].day = 0;
-                todaySchedules[todayIndex].category = readEEPROM(i * 7 + 863 + 4);
-                todaySchedules[todayIndex].subject = readEEPROM(i * 7 + 863 + 6); // Alamat untuk subject
-                todayIndex++;
-                // Tampilkan jadwal atau simpan dalam array untuk ditampilkan nanti
+    todayScheduleCount = 0;
 
-                if (scheduleDay > 0 && scheduleDay < 32 && isOnce)
-                {
-                    writeEEPROM(i * 7 + 863 + 5, 0); // Set day ke 101-131 untuk menandakan bahwa jadwal ini sudah diproses untuk hari ini, sehingga tidak akan diproses lagi sampai besok
-                }
-            }
-            else if ((scheduleDay == tomorrowTime.day() && scheduleMonth == tomorrowTime.month()) || (scheduleDay > 50 && scheduleDay < 58 && scheduleMonth - 50 == tomorrowTime.dayOfTheWeek()))
+    for (int i = 0; i < SCHEDULE_MAX_EEPROM; i++)
+    {
+        int base = SCHEDULE_BASE + SCHEDULE_SLOT * i;
+        byte flags = readEEPROM(base + 5);
+
+        if (flags == FLAG_END_OF_LIST)
+            break; // no more data
+        if (flags == FLAG_INACTIVE)
+            continue; // deleted / free slot
+
+        byte rawDay = readEEPROM(base + 2);
+        byte rawMonth = readEEPROM(base + 3);
+
+        // Decode interval type
+        bool isOnce = false;
+        bool isDaily = false;
+        bool isWeekly = false;
+        bool isYearly = false;
+        byte compareDay = rawDay;
+        byte compareMonth = rawMonth;
+
+        if (rawDay == 0)
+        {
+            isDaily = true;
+        }
+        else if (rawDay >= 51 && rawDay <= 57)
+        {
+            isWeekly = true;
+            compareDay = rawDay - 50; // 1=Sun … 7=Sat
+        }
+        else if (rawDay >= 101 && rawDay <= 131)
+        {
+            isYearly = true;
+            compareDay = rawDay - 100;
+        }
+        else
+        {
+            isOnce = true;
+        }
+
+        // ── Check if this schedule applies today ──────────────────────────
+        bool matchToday = false;
+        bool matchTomorrow = false;
+
+        if (isDaily)
+        {
+            matchToday = true;
+        }
+        else if (isWeekly)
+        {
+            if (compareDay == nowTime.dayOfTheWeek() + 1)
+                matchToday = true;
+            if (compareDay == tomorrowTime.dayOfTheWeek() + 1)
+                matchTomorrow = true;
+        }
+        else if (isYearly)
+        {
+            if (compareDay == nowTime.day() && compareMonth == nowTime.month())
+                matchToday = true;
+            if (compareDay == tomorrowTime.day() && compareMonth == tomorrowTime.month())
+                matchTomorrow = true;
+        }
+        else
+        { // once
+            if (compareDay == nowTime.day() && compareMonth == nowTime.month())
+                matchToday = true;
+            if (compareDay == tomorrowTime.day() && compareMonth == tomorrowTime.month())
+                matchTomorrow = true;
+        }
+
+        if (matchToday && todayScheduleCount < SCHEDULE_MAX_RAM)
+        {
+            todaySchedules[todayScheduleCount].hour = readEEPROM(base + 0);
+            todaySchedules[todayScheduleCount].minute = readEEPROM(base + 1);
+            todaySchedules[todayScheduleCount].day = 0;
+            todaySchedules[todayScheduleCount].flags = flags;
+            todaySchedules[todayScheduleCount].category = readEEPROM(base + 4);
+            todaySchedules[todayScheduleCount].subject = readEEPROM(base + 6);
+            todayScheduleCount++;
+
+            // Once-only: mark as inactive after loading so it won't show again
+            if (isOnce)
             {
-                if (flags == 3) // Cek apakah kategori jadwal ini adalah "- 1 day reminder"
-                {
-                    // Jika jadwal besok adalah kategori "Penting", tampilkan atau simpan untuk ditampilkan
-                    todaySchedules[todayIndex].hour = readEEPROM(i * 7 + 863 + 0);
-                    todaySchedules[todayIndex].minute = readEEPROM(i * 7 + 863 + 1);
-                    todaySchedules[todayIndex].day = 1;
-                    todaySchedules[todayIndex].category = readEEPROM(i * 7 + 863 + 4);
-                    todaySchedules[todayIndex].subject = readEEPROM(i * 7 + 863 + 6); // Alamat untuk subject
-                    todayIndex++;
-                    // Tampilkan jadwal atau simpan dalam array untuk ditampilkan nanti
-                }
+                writeEEPROM(base + 5, FLAG_INACTIVE);
             }
         }
-        else if (flags == -1)
+
+        // ── ONE_DAY_BEFORE reminder for tomorrow ──────────────────────────
+        if (matchTomorrow && flags == ONE_DAY_BEFORE && todayScheduleCount < SCHEDULE_MAX_RAM)
         {
-            // Jika flags -1, berarti tidak ada jadwal lagi setelah ini, jadi kita bisa berhenti mencari
-            break;
+            todaySchedules[todayScheduleCount].hour = readEEPROM(base + 0);
+            todaySchedules[todayScheduleCount].minute = readEEPROM(base + 1);
+            todaySchedules[todayScheduleCount].day = 1;
+            todaySchedules[todayScheduleCount].flags = flags;
+            todaySchedules[todayScheduleCount].category = readEEPROM(base + 4);
+            todaySchedules[todayScheduleCount].subject = readEEPROM(base + 6);
+            todayScheduleCount++;
         }
     }
 }

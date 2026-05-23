@@ -6,64 +6,49 @@
 #include "constant.h"
 #include "time-date.h"
 
+// These are the authoritative definitions (extern'd in time-date.h)
 DateTime nowTime;
 DateTime tomorrowTime;
 
-unsigned long lastTimeDisplay = 0;
-unsigned long timeDisplayDelay = 1000;
+static int8_t lastSecond = -1;
+static int8_t lastDay = -1; // -1 = uninitialised
 
-char namaHari[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-// Use nullptr for pointers to avoid warnings
-char *lastDay = nullptr;
+static const char dayNames[7][4] = {
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
 void clockDisplay()
 {
-    unsigned long currentTime = millis();
-    nowTime = rtc.now(); // Update waktu saat ini dari RTC
+    nowTime = rtc.now();
     tomorrowTime = nowTime + TimeSpan(1, 0, 0, 0);
+
     int currentDayIdx = nowTime.dayOfTheWeek();
 
-    // 1. Update the time every second
-    if (currentTime - lastTimeDisplay > timeDisplayDelay)
+    // ── Time: update every second ─────────────────────────────────────────
+    if (nowTime.second() != lastSecond)
     {
+        lastSecond = nowTime.second();
+
+        char buf[9]; // "HH:MM:SS"
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
+                 nowTime.hour(), nowTime.minute(), nowTime.second());
         lcd2.setCursor(0, 0);
-        if (nowTime.hour() < 10)
-            lcd2.print('0');
-        lcd2.print(nowTime.hour());
-        lcd2.print(':');
-        if (nowTime.minute() < 10)
-            lcd2.print('0');
-        lcd2.print(nowTime.minute());
-        lcd2.print(':');
-        if (nowTime.second() < 10)
-            lcd2.print('0');
-        lcd2.print(nowTime.second());
-        lastTimeDisplay = currentTime;
+        lcd2.print(buf);
     }
 
-    // 2. Update Day and Date only if the day has changed (or on startup)
-    if (lastDay == nullptr || namaHari[currentDayIdx] != lastDay)
+    // ── Day name: update only when day changes ────────────────────────────
+    if (currentDayIdx != lastDay)
     {
-        // Update Day Name
-        lcd2.setCursor(16 - 3, 0);
-        lcd2.print(namaHari[currentDayIdx]);
+        lastDay = currentDayIdx;
 
-        // Update Full Date
-        lcd2.setCursor(2, 1);
-        if (nowTime.day() < 10)
-            lcd2.print('0');
-        lcd2.print(nowTime.day());
-        lcd2.print('-');
+        // Day name, right-aligned on row 0
+        lcd2.setCursor(13, 0);
+        lcd2.print(dayNames[currentDayIdx]);
 
-        // Fixed month logic
-        if (nowTime.month() < 10)
-            lcd2.print('0');
-        lcd2.print(nowTime.month());
-
-        lcd2.print('-');
-        lcd2.print(nowTime.year());
-
-        // Save the current day so we don't refresh the date again until tomorrow
-        lastDay = namaHari[currentDayIdx];
+        // Full date on row 1, centred
+        char dateBuf[12]; // "DD-MM-YYYY"
+        snprintf(dateBuf, sizeof(dateBuf), "%02d-%02d-%04d",
+                 nowTime.day(), nowTime.month(), nowTime.year());
+        lcd2.setCursor((16 - 10) / 2, 1);
+        lcd2.print(dateBuf);
     }
 }

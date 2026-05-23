@@ -1,21 +1,25 @@
 #ifndef LCD1_H
 #define LCD1_H
 
-char *typing();
+// Returns pointer to completed string when user confirms, "" otherwise.
+// Resets internal state when resetTyping() is called.
+const char *typing();
+void resetTyping();
+
 void lcd1Config();
 void lcd1Main();
 
-enum State
+enum State : byte
 {
-    ADD_SCHEDULE,
+    ADD_SCHEDULE = 0,
     HOMEPAGE,
     MENU,
 };
 
 extern State currentState;
 
-// state
 void menu();
 void addScheduleInterface();
+void homepage();
 
 #endif

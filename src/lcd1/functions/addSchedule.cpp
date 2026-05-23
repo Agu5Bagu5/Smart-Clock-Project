@@ -1,70 +1,87 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-#include <RTClib.h>
 #include "data.h"
-#include "time-date.h"
 
-static int adress(int e, int index)
+/*  Slot layout (7 bytes):
+ *   base+0 : hour
+ *   base+1 : minute
+ *   base+2 : day
+ *   base+3 : month
+ *   base+4 : category
+ *   base+5 : flags   ← 0x00 = free, 0xFF = end-sentinel, else active
+ *   base+6 : subject
+ *
+ *  This matches exactly what getSchedule.cpp reads:
+ *    i*7 + SCHEDULE_BASE + 0  → hour
+ *    i*7 + SCHEDULE_BASE + 1  → minute
+ *    ...
+ *    i*7 + SCHEDULE_BASE + 5  → flags
+ *    i*7 + SCHEDULE_BASE + 6  → subject
+ */
+static int slotAddr(int offset, int index)
 {
-    return ((860 + e) + 7 * index);
+    return SCHEDULE_BASE + SCHEDULE_SLOT * index + offset;
 }
 
-void addSchedule(byte hour, byte minute, byte day, byte month, byte category, byte subject, byte flags, byte interval)
+void addSchedule(byte hour, byte minute, byte day, byte month,
+                 byte category, byte subject, byte flags, byte interval)
 {
-    Schedule newSchedule;
+    Schedule s;
+    s.hour = hour;
+    s.minute = minute;
+    s.category = category;
+    s.subject = subject;
+    s.flags = flags; // caller passes ON_TIME / ONE_HOUR_BEFORE / ONE_DAY_BEFORE
 
-    if (interval == ONCE_ONLY)
+    switch (interval)
     {
-        newSchedule.day = day;
-        newSchedule.month = month;
-    }
-    else if (interval == DAILY)
-    {
-        newSchedule.day = 0; // 0 menandakan jadwal ini untuk setiap hari
-        newSchedule.month = 0;
-    }
-    else if (interval == WEEKLY)
-    {
-        newSchedule.day = 50 + 1 + day; // 51-57 menandakan jadwal ini untuk setiap minggu, dengan 51 untuk hari Minggu, 52 untuk hari Senin, dan seterusnya
-        newSchedule.month = 0;
-    }
-    else if (interval == YEARLY)
-    {
-        newSchedule.day = 100 + day; // 101-131 menandakan jadwal ini untuk setiap tahun, dengan day untuk menandakan tanggalnya
-        newSchedule.month = month;
+    case ONCE_ONLY:
+        s.day = day;
+        s.month = month;
+        break;
+    case DAILY:
+        s.day = 0;
+        s.month = 0;
+        break;
+    case WEEKLY:
+        // 51-57 encode Sunday(51) … Saturday(57)
+        s.day = 50 + day; // caller passes 1-7
+        s.month = 0;
+        break;
+    case YEARLY:
+        s.day = 100 + day; // 101-131
+        s.month = month;
+        break;
     }
 
-    newSchedule.hour = hour;
-    newSchedule.minute = minute;
-    newSchedule.category = category;
-    newSchedule.subject = subject;
-    newSchedule.flags = flags;
-
-    for (int i = 0; i < 200; i++)
+    for (int i = 0; i < SCHEDULE_MAX_EEPROM; i++)
     {
-        byte flag = readEEPROM((860 + 6) + 7 * i);
-        if (flag == -1 || flag == 0)
+        byte existingFlags = readEEPROM(slotAddr(5, i));
+
+        if (existingFlags == FLAG_END_OF_LIST || existingFlags == FLAG_INACTIVE)
         {
-            if (flag == -1)
+            // If we're reusing an end-sentinel slot, push the sentinel forward
+            if (existingFlags == FLAG_END_OF_LIST && i + 1 < SCHEDULE_MAX_EEPROM)
             {
-                writeEEPROM(adress(6, i) + 7, -1);
+                writeEEPROM(slotAddr(5, i + 1), FLAG_END_OF_LIST);
             }
 
-            writeEEPROM(adress(6, i), newSchedule.flags);
-            writeEEPROM(adress(1, i), newSchedule.hour);
-            writeEEPROM(adress(2, i), newSchedule.minute);
-            writeEEPROM(adress(3, i), newSchedule.day);
-            writeEEPROM(adress(4, i), newSchedule.month);
-            if (readEEPROM(adress(5, i)) != newSchedule.category)
-            {
-                writeEEPROM(adress(5, i), newSchedule.category);
-            }
-            if (readEEPROM(adress(7, i)) != newSchedule.subject)
-            {
-                writeEEPROM(adress(7, i), newSchedule.subject);
-            }
+            writeEEPROM(slotAddr(0, i), s.hour);
+            writeEEPROM(slotAddr(1, i), s.minute);
+            writeEEPROM(slotAddr(2, i), s.day);
+            writeEEPROM(slotAddr(3, i), s.month);
+            writeEEPROM(slotAddr(4, i), s.category);
+            writeEEPROM(slotAddr(6, i), s.subject);
+            // Write flags last so the slot is only "visible" once fully written
+            writeEEPROM(slotAddr(5, i), s.flags);
             break;
         }
     }
+}
+
+void deleteSchedule(int index)
+{
+    if (index < 0 || index >= SCHEDULE_MAX_EEPROM)
+        return;
+    writeEEPROM(slotAddr(5, index), FLAG_INACTIVE);
 }

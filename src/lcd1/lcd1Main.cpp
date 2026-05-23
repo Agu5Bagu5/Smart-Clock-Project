@@ -8,21 +8,20 @@
 LiquidCrystal_I2C lcd1(0x27, 16, 2);
 
 State currentState = ADD_SCHEDULE;
-State lastState = HOMEPAGE;
 
 void lcd1Main()
 {
-    // Jalankan logika berdasarkan state saat ini
     switch (currentState)
     {
     case MENU:
         menu();
-        lastState = HOMEPAGE;
         break;
     case ADD_SCHEDULE:
         addScheduleInterface();
         break;
-
+    case HOMEPAGE:
+        homepage();
+        break;
     default:
         break;
     }

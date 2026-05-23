@@ -9,7 +9,8 @@
 #include "blinkLogic.h"
 #include "time-date.h"
 
-struct tempSchedule
+// ─── Shared schedule being built ─────────────────────────────────────────────
+struct TempSchedule
 {
     byte hour;
     byte minute;
@@ -20,563 +21,372 @@ struct tempSchedule
     byte flags;
     byte interval;
 };
+static TempSchedule newSchedule;
 
-tempSchedule newSchedule;
-
-enum Step
+enum Step : byte
 {
-    SELECT_CATEGORY,
+    SELECT_CATEGORY = 0,
     SELECT_SUBJECT,
     SELECT_INTERVAL,
     TIME_INPUT,
     SELECT_REMINDER,
     CONFIRMATION
 };
+static Step currentStep = SELECT_CATEGORY;
+static Step lastStep = (Step)0xFF;   // force initial transition
+static bool stepJustChanged = false; // show "step title" for one cycle
 
-byte currentStep = SELECT_CATEGORY;
-
-//=============================================================================
-// Category Selection
-
-void categoryDisplayUpdate(int activeCategoryRow)
+// Helper: print a centred string on a given row (clears row first)
+static void printCentered(const char *s, byte row)
 {
-    // Category Name
-    lcd1.setCursor(0, 0);
-    lcd1.print("              "); // Clear the line
+    char buf[17];
+    memset(buf, ' ', 16);
+    buf[16] = '\0';
+    int len = strlen(s);
+    int col = (16 - len) / 2;
+    if (col < 0)
+        col = 0;
+    memcpy(buf + col, s, min(len, 16 - col));
+    lcd1.setCursor(0, row);
+    lcd1.print(buf);
+}
 
-    delay(5); // Debounce delay
-
-    switch (activeCategoryRow)
+// ─── Transition banner ────────────────────────────────────────────────────────
+static const char *stepTitle(Step s)
+{
+    switch (s)
     {
-    case HOMEWORK:
-        lcd1.print("> Homework");
-        break;
-    case EXAM:
-        lcd1.print("> Exam");
-        break;
-    case PERSONAL:
-        lcd1.print("> Personal");
-        break;
-    case OTHER:
-        lcd1.print("> Other");
-        break;
-    }
-
-    // Logika untuk menampilkan pilihan kategori
-    for (int i = 0; i < 4; i++)
-    {
-        lcd1.setCursor(4 + (i * 2), 1);
-        if (activeCategoryRow == i)
-        {
-            lcd1.print(">");
-        }
-        else
-        {
-            lcd1.print(" ");
-        }
-        lcd1.print(byte(i));
+    case SELECT_CATEGORY:
+        return "Select Category";
+    case SELECT_SUBJECT:
+        return "Select Subject";
+    case SELECT_INTERVAL:
+        return "Select Interval";
+    case TIME_INPUT:
+        return "Input Time/Date";
+    case SELECT_REMINDER:
+        return "Select Reminder";
+    case CONFIRMATION:
+        return "Confirm it!";
+    default:
+        return "";
     }
 }
 
-void categorySelection()
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 1: Category
+// ─────────────────────────────────────────────────────────────────────────────
+static void categorySelection()
 {
-    static int activeCategoryRow = HOMEWORK;
-    static int lastActiveCategoryRow = -1;
+    static byte activeCat = HOMEWORK;
+    static byte lastActiveCat = 0xFF;
 
-    if (lastActiveCategoryRow != activeCategoryRow)
+    if (lastActiveCat != activeCat)
     {
-        categoryDisplayUpdate(activeCategoryRow);
-        lastActiveCategoryRow = activeCategoryRow;
+        // Row 0: name
+        static const char *catNames[4] = {"Homework", "Exam", "Personal", "Other"};
+        printCentered(catNames[activeCat], 0);
+
+        // Row 1: four indicators
+        lcd1.setCursor(0, 1);
+        lcd1.print("                ");
+        for (byte i = 0; i < 4; i++)
+        {
+            lcd1.setCursor(4 + i * 3, 1);
+            lcd1.print(activeCat == i ? ">" : " ");
+            lcd1.write(i); // custom icon
+        }
+        lastActiveCat = activeCat;
     }
 
-    // Logika untuk memilih kategori dengan tombol
-
-    // right button
     if (rightPressed())
     {
-        if (activeCategoryRow < OTHER)
-        {
-            activeCategoryRow++;
-        }
-        else
-        {
-            activeCategoryRow = HOMEWORK;
-        }
+        activeCat = (activeCat < OTHER) ? activeCat + 1 : HOMEWORK;
     }
-
-    // left button
     else if (leftPressed())
     {
-        if (activeCategoryRow > HOMEWORK)
-        {
-            activeCategoryRow--;
-        }
-        else
-        {
-            activeCategoryRow = OTHER;
-        }
+        activeCat = (activeCat > HOMEWORK) ? activeCat - 1 : OTHER;
     }
-
-    // enter button
     else if (enterPressed())
     {
-        newSchedule.category = activeCategoryRow;
-        // Pindah ke langkah berikutnya, misalnya memilih subjek
-        // currentStep = SELECT_SUBJECT;
-        delay(5); // Debounce delay
+        newSchedule.category = activeCat;
         currentStep = SELECT_SUBJECT;
     }
 }
 
-//======================================================================================
-// Subject Selection
-
-byte activeSubject = 0;
-byte lastActiveSubject = -1;
-char prevSubject[14];
-Subject currentSubject;
-char nextSubject[14];
-
-bool newSubject()
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 2: Subject
+// ─────────────────────────────────────────────────────────────────────────────
+static void subjectSelection()
 {
-    char *name = typing();
+    static byte activeSubject = 0;
+    static byte lastActiveSubject = 0xFF;
+    static bool inAddMode = false;
 
-    if (strlen(name) == 0)
+    // ── Add-subject typing sub-mode ──────────────────────────────────────────
+    if (inAddMode)
     {
-        return false;
-    }
-
-    Subject moreSubject;
-    moreSubject.category = newSchedule.category;
-
-    bool idTaken[50] = {false}; // Tracks which IDs 0-49 are used
-    byte subjectId = 255;       // Default value
-
-    // Mark all currently used IDs as true
-    for (int i = 0; i < 50; i++)
-    {
-        if (subjects[i].subjectId >= 0 && subjects[i].subjectId < 50)
+        const char *result = typing();
+        if (result[0] != '\0')
         {
-            idTaken[subjects[i].subjectId] = true;
+            // User confirmed a name — find a free subjectId
+            byte idTaken[SUBJECT_MAX_RAM];
+            memset(idTaken, 0, sizeof(idTaken));
+            for (int i = 0; i < subjectCount; i++)
+            {
+                if (subjects[i].subjectId < SUBJECT_MAX_RAM)
+                {
+                    idTaken[subjects[i].subjectId] = 1;
+                }
+            }
+            byte newId = 0;
+            for (byte i = 0; i < SUBJECT_MAX_RAM; i++)
+            {
+                if (!idTaken[i])
+                {
+                    newId = i;
+                    break;
+                }
+            }
+            addSubject(newSchedule.category, newId, result);
+            resetTyping();
+            inAddMode = false;
+            activeSubject = 0;
+            lastActiveSubject = 0xFF;
         }
+        return;
     }
 
-    // Find the first ID that remains false
-    for (int i = 0; i < 50; i++)
-    {
-        if (!idTaken[i])
-        {
-            subjectId = i;
-            break; // Found an available ID
-        }
-    }
-
-    moreSubject.subjectId = subjectId;
-    strcpy(moreSubject.subject, name);
-
-    addSubject(moreSubject.category, moreSubject.subjectId, moreSubject.subject);
-
-    return true;
-}
-
-void subjectDisplayUpdate()
-{
-    // Logika untuk memperbarui tampilan subjek berdasarkan activeSubject
-    int subjectFound = 0;
-    for (unsigned int i = 0; i < sizeof(subjects) / sizeof(subjects[0]); i++)
+    // ── Count subjects for this category ─────────────────────────────────────
+    // slot 0 is always "Add Subject"
+    // slots 1..N are real subjects of this category
+    byte count = 0;
+    for (byte i = 0; i < subjectCount; i++)
     {
         if (subjects[i].category == newSchedule.category)
-        {
-            if (activeSubject == 0)
-            {
-                strcpy(prevSubject, "   ");
-                strcpy(currentSubject.subject, "Add Subject");
-                strcpy(nextSubject, subjects[i].subject);
-
-                break;
-            }
-
-            subjectFound += 1;
-            if (subjectFound == activeSubject)
-            {
-                currentSubject = subjects[i];
-                if (activeSubject == 1)
-                {
-                    strcpy(prevSubject, "Add");
-                }
-            }
-            else if (subjectFound == activeSubject - 1)
-            {
-                strcpy(prevSubject, subjects[i].subject);
-            }
-            else if (subjectFound == activeSubject + 1)
-            {
-                if (strlen(subjects[i].subject) != 0)
-                {
-                    strcpy(nextSubject, subjects[i].subject);
-                }
-                else
-                {
-                    strcpy(nextSubject, "   ");
-                }
-                break;
-            }
-        }
+            count++;
     }
+    byte maxSlot = count; // activeSubject ranges 0 .. count
 
-    // middle
-    char middlePosition = (16 - strlen(currentSubject.subject)) / 2;
-    lcd1.setCursor(middlePosition, 0);
-    lcd1.print(currentSubject.subject);
-
-    // left
-    char leftName[14];
-    int len = strlen(prevSubject);
-    strlcpy(leftName, prevSubject + len - 3, 3);
-    leftName[3] = '\0'; // Pastikan string berakhir dengan null terminator
-    lcd1.setCursor(0, 1);
-    lcd1.print(".." + String(leftName));
-
-    // right
-    char rightName[14];
-    strncpy(rightName, nextSubject, 3);
-    rightName[3] = '\0'; // Pastikan string berakhir dengan null terminator
-    lcd1.setCursor(16 - 5, 1);
-    lcd1.print(String(rightName) + "..");
-}
-
-void subjectSelection()
-{
-    static bool isAddSubject = false;
-
-    if (isAddSubject)
-    {
-        bool addSubjectStatus = newSubject();
-        if (addSubjectStatus)
-        {
-            isAddSubject = false;
-            return;
-        }
-        else
-        {
-            return;
-        }
-    }
-
-    // left button
-    if (leftPressed())
-    {
-        if (activeSubject > 0)
-        {
-            activeSubject--;
-        }
-        else
-        {
-            activeSubject = 0;
-        }
-    }
-
-    // right button
-    else if (rightPressed())
-    {
-        if (nextSubject[0] != '\0')
-        {
-            activeSubject++;
-        }
-        else
-        {
-            activeSubject = activeSubject;
-        }
-    }
-
-    // enter button
+    // ── Navigation ───────────────────────────────────────────────────────────
+    if (rightPressed() && activeSubject < maxSlot)
+        activeSubject++;
+    else if (leftPressed() && activeSubject > 0)
+        activeSubject--;
     else if (enterPressed())
     {
         if (activeSubject == 0)
         {
-            // Logika untuk menambahkan subjek baru
-            isAddSubject = true;
+            inAddMode = true;
+            lcd1.clear();
+            lcd1.setCursor(0, 0);
+            lcd1.print("                "); // blank typed area
+            lcd1.setCursor(0, 1);
+            lcd1.print("Ok Sp|ABCDEFGH");
             return;
         }
         else
         {
-            // Logika untuk memilih subjek yang sudah ada
-            newSchedule.subject = currentSubject.subjectId;
-            // Pindah ke langkah berikutnya, misalnya memilih interval
+            // Find the Nth subject of this category
+            byte n = 0;
+            for (byte i = 0; i < subjectCount; i++)
+            {
+                if (subjects[i].category == newSchedule.category)
+                {
+                    n++;
+                    if (n == activeSubject)
+                    {
+                        newSchedule.subject = subjects[i].subjectId;
+                        break;
+                    }
+                }
+            }
             currentStep = SELECT_INTERVAL;
         }
-        delay(5); // Debounce delay
     }
 
+    // ── Render (only when cursor changed) ────────────────────────────────────
     if (lastActiveSubject != activeSubject)
     {
         lcd1.clear();
 
-        delay(5); // Debounce delay
+        // Current name (centred, row 0)
+        char curName[16];
+        if (activeSubject == 0)
+        {
+            strcpy(curName, "Add Subject");
+        }
+        else
+        {
+            byte n = 0;
+            curName[0] = '\0';
+            for (byte i = 0; i < subjectCount; i++)
+            {
+                if (subjects[i].category == newSchedule.category)
+                {
+                    n++;
+                    if (n == activeSubject)
+                    {
+                        strncpy(curName, subjects[i].subject, 15);
+                        curName[15] = '\0';
+                        break;
+                    }
+                }
+            }
+        }
+        printCentered(curName, 0);
 
-        subjectDisplayUpdate();
+        // Left hint (row 1 left)
+        lcd1.setCursor(0, 1);
+        if (activeSubject == 0)
+        {
+            lcd1.print("   ");
+        }
+        else if (activeSubject == 1)
+        {
+            lcd1.print("Add");
+        }
+        else
+        {
+            byte n = 0;
+            for (byte i = 0; i < subjectCount; i++)
+            {
+                if (subjects[i].category == newSchedule.category)
+                {
+                    n++;
+                    if (n == activeSubject - 1)
+                    {
+                        char buf[4] = "   ";
+                        strncpy(buf, subjects[i].subject, 3);
+                        buf[3] = '\0';
+                        lcd1.print(buf);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Right hint (row 1 right)
+        lcd1.setCursor(13, 1);
+        if (activeSubject < maxSlot)
+        {
+            byte n = 0;
+            for (byte i = 0; i < subjectCount; i++)
+            {
+                if (subjects[i].category == newSchedule.category)
+                {
+                    n++;
+                    if (n == activeSubject + 1)
+                    {
+                        char buf[4] = "   ";
+                        strncpy(buf, subjects[i].subject, 3);
+                        buf[3] = '\0';
+                        lcd1.print(buf);
+                        break;
+                    }
+                }
+            }
+        }
+        else
+        {
+            lcd1.print("   ");
+        }
+
         lastActiveSubject = activeSubject;
     }
 }
 
-//======================================================================================
-// Interval Selection
-
-const char intervals[4][10] = {
-    "Once",
-    "Daily",
-    "Weekly",
-    "Yearly"};
-
-byte activeInterval = 0;
-byte lastActiveInterval = -1;
-
-void updateDisplayInterval()
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 3: Interval
+// ─────────────────────────────────────────────────────────────────────────────
+static void intervalSelection()
 {
-    byte writeCol = 0;
-    for (int i = 0; i < 4; i++)
-    {
-        if (i % 2 == 0)
-        {
-            lcd1.setCursor(7 - strlen(intervals[i]), writeCol);
-            lcd1.print(intervals[i]);
-            if (activeInterval == i)
-            {
-                lcd1.print("<");
-            }
-            else
-            {
-                lcd1.print(" ");
-            }
-        }
-        else
-        {
-            lcd1.setCursor(9, writeCol);
-            if (activeInterval == i)
-            {
-                lcd1.print(">");
-            }
-            else
-            {
-                lcd1.print(" ");
-            }
+    static byte activeInterval = 0;
+    static byte lastActiveInterval = 0xFF;
 
-            lcd1.print(intervals[i]);
-
-            writeCol++;
-        }
-    }
-}
-
-void intervalSelection()
-{
-    // right button
     if (rightPressed())
-    {
-        if (activeInterval < 3)
-        {
-            activeInterval++;
-        }
-        else
-        {
-            activeInterval = 0;
-        }
-    }
-
-    // left button
+        activeInterval = (activeInterval < 3) ? activeInterval + 1 : 0;
     else if (leftPressed())
-    {
-        if (activeInterval > 0)
-        {
-            activeInterval--;
-        }
-        else
-        {
-            activeInterval = 3;
-        }
-    }
-
-    // enter button
+        activeInterval = (activeInterval > 0) ? activeInterval - 1 : 3;
     else if (enterPressed())
     {
         newSchedule.interval = activeInterval;
-        // Pindah ke langkah berikutnya, misalnya memilih jam dan menit
         currentStep = TIME_INPUT;
-        delay(5); // Debounce delay
     }
 
     if (lastActiveInterval != activeInterval)
     {
-        updateDisplayInterval();
+        // Layout: row0 left | row0 right / row1 left | row1 right
+        static const char labels[4][7] = {"Once", "Daily", "Weekly", "Yearly"};
+        lcd1.clear();
+        for (byte i = 0; i < 4; i++)
+        {
+            byte col = (i % 2 == 0) ? 0 : 9;
+            byte row = i / 2;
+            lcd1.setCursor(col, row);
+            if (activeInterval == i)
+                lcd1.print(">");
+            else
+                lcd1.print(" ");
+            lcd1.print(labels[i]);
+        }
         lastActiveInterval = activeInterval;
     }
 }
 
-//======================================================================================
-// Time Input
-
-byte hour = nowTime.hour();
-byte minute = nowTime.minute();
-byte day = nowTime.day();
-byte month = nowTime.month();
-byte dayOfWeek = nowTime.dayOfTheWeek();
-const char *dayNames[7] = {
-    "Sun",
-    "Mon",
-    "Tue",
-    "Wed",
-    "Thu",
-    "Fri",
-    "Sat"};
-
-bool changeHour = true;
-signed char timeInputCursor = newSchedule.interval == WEEKLY ? -1 : 0; // -1 untuk memilih hari dalam seminggu, 0 untuk jam, 1 untuk menit, 2 untuk tanggal, 3 untuk bulan
-byte lastTimeInputCursor = -2;
-
-byte getMaxTimeInputFields()
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 4: Time input
+// ─────────────────────────────────────────────────────────────────────────────
+static void timeInput()
 {
-    // Daily: 2 fields (hour, minute)
-    // Weekly: 3 fields (hour, minute, day of week)
-    // Once: 4 fields (hour, minute, day, month)
-    // Yearly: 4 fields (hour, minute, day, month)
-    if (newSchedule.interval == 0 || newSchedule.interval == 1)
-    {
-        return 2;
-    }
-    else if (newSchedule.interval == 2)
-    {
-        return 3;
-    }
-    else
-    {
-        return 4;
-    }
-}
+    static byte hour = 0;
+    static byte minute = 0;
+    static byte day = 1;
+    static byte month = 1;
+    static byte dow = 0;      // day of week 0=Sun
+    static int8_t cursor = 0; // which field is active
+    static bool needRender = true;
 
-void updateTimeDisplay()
-{
-    lcd1.clear();
-
-    byte maxFields = getMaxTimeInputFields();
-
-    if (maxFields == 2)
+    // Initialise from RTC on first entry
+    static bool initialised = false;
+    if (!initialised)
     {
-        // Daily: only show hour and minute
-        lcd1.setCursor((16 - 5) / 2, 0);
-        String display = (hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute);
-        lcd1.print(display);
-    }
-    else if (maxFields == 3)
-    {
-        // Weekly: show day of week, hour, and minute
-        lcd1.setCursor((16 - 8) / 2, 0);
-        String display = String(dayNames[dayOfWeek]) + " " + (hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute);
-        lcd1.print(display);
-    }
-    else
-    {
-        // Once or Yearly: show full date and time
-        lcd1.setCursor((16 - 12) / 2, 0);
-        String display = (hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute) + " " + (day < 10 ? "0" : "") + String(day) + "-" + (month < 10 ? "0" : "") + String(month);
-        lcd1.print(display);
-    }
-}
-
-void updateCursorTime()
-{
-    byte maxFields = getMaxTimeInputFields();
-
-    if (maxFields == 2)
-    {
-        // Daily: show cursor for hour and minute
-        for (int i = 0; i < 2; i++)
-        {
-            lcd1.setCursor((16 - 5) / 2 + i * 3, 1);
-            if (timeInputCursor == i)
-            {
-                lcd1.print("^^");
-            }
-            else
-            {
-                lcd1.print("  ");
-            }
-        }
-
-        if (timeInputCursor == 2)
-        {
-            lcd1.setCursor(16 - 2, 1);
-            lcd1.print("OK");
-        }
-    }
-    else if (maxFields == 3)
-    {
-        // Weekly: show cursor for hour, minute, and day of week
-        for (int i = 0; i < 3; i++)
-        {
-            lcd1.setCursor(((16 - 8) / 2) + 1 + i * 3, 1);
-            if (timeInputCursor == i)
-            {
-                lcd1.print("^^");
-            }
-            else
-            {
-                lcd1.print("  ");
-            }
-        }
-
-        if (timeInputCursor == 3)
-        {
-            lcd1.setCursor(16 - 2, 1);
-            lcd1.print("OK");
-        }
-    }
-    else
-    {
-        // Once or Yearly: show cursor for all four fields
-        for (int i = 0; i < 4; i++)
-        {
-            lcd1.setCursor((16 - 12) / 2 + i * 3, 1);
-            if (timeInputCursor == i)
-            {
-                lcd1.print("^^");
-            }
-            else
-            {
-                lcd1.print("  ");
-            }
-        }
-
-        if (timeInputCursor == 4)
-        {
-            lcd1.setCursor(16 - 2, 1);
-            lcd1.print("OK");
-        }
-    }
-}
-
-void timeInput()
-{
-    if (changeHour)
-    {
-        updateTimeDisplay();
-        changeHour = false;
+        hour = nowTime.hour();
+        minute = nowTime.minute();
+        day = nowTime.day();
+        month = nowTime.month();
+        dow = nowTime.dayOfTheWeek();
+        cursor = (newSchedule.interval == WEEKLY) ? -1 : 0;
+        needRender = true;
+        initialised = true;
     }
 
-    if (lastTimeInputCursor != timeInputCursor)
+    // Fields: -1=dow(weekly only), 0=hour, 1=min, 2=day(once/yearly), 3=month(once/yearly)
+    byte maxCursor;
+    switch (newSchedule.interval)
     {
-        updateCursorTime();
-        lastTimeInputCursor = timeInputCursor;
+    case DAILY:
+        maxCursor = 1;
+        break;
+    case WEEKLY:
+        maxCursor = 1;
+        break; // cursor goes -1,0,1
+    case ONCE_ONLY:
+    case YEARLY:
+        maxCursor = 3;
+        break;
+    default:
+        maxCursor = 1;
+        break;
     }
 
-    byte maxFields = getMaxTimeInputFields();
-
-    // right button
+    // ── Buttons ──────────────────────────────────────────────────────────────
     if (rightPressed())
     {
-        switch (timeInputCursor)
+        switch (cursor)
         {
         case -1:
-            dayOfWeek = ((dayOfWeek + 1) % 7) + 1;
+            dow = (dow + 1) % 7;
             break;
         case 0:
             hour = (hour + 1) % 24;
@@ -585,20 +395,20 @@ void timeInput()
             minute = (minute + 1) % 60;
             break;
         case 2:
-            day = ((day + 1) % 31) + 1;
+            day = (day % 31) + 1;
             break;
         case 3:
-            month = ((month + 1) % 12) + 1;
+            month = (month % 12) + 1;
             break;
         }
+        needRender = true;
     }
-
     else if (leftPressed())
     {
-        switch (timeInputCursor)
+        switch (cursor)
         {
         case -1:
-            dayOfWeek = ((dayOfWeek + 5) % 7) + 1;
+            dow = (dow + 6) % 7;
             break;
         case 0:
             hour = (hour + 23) % 24;
@@ -607,285 +417,316 @@ void timeInput()
             minute = (minute + 59) % 60;
             break;
         case 2:
-            day = ((day + 29) % 31) + 1;
+            day = (day > 1) ? day - 1 : 31;
             break;
         case 3:
-            month = ((month + 10) % 12) + 1;
+            month = (month > 1) ? month - 1 : 12;
             break;
         }
+        needRender = true;
     }
-
     else if (enterPressed())
     {
-        if (timeInputCursor < maxFields)
+        int8_t maxC = (int8_t)maxCursor;
+        if (cursor < maxC)
         {
-            timeInputCursor++;
+            cursor++;
         }
         else
         {
-            // Simpan jadwal baru ke dalam array todaySchedules
+            // Done
             newSchedule.hour = hour;
             newSchedule.minute = minute;
             newSchedule.day = day;
             newSchedule.month = month;
-
-            // Pindah ke langkah berikutnya, misalnya memilih pengingat
+            if (newSchedule.interval == WEEKLY)
+                newSchedule.day = dow + 1;
+            initialised = false; // reset for next use
             currentStep = SELECT_REMINDER;
         }
-        delay(5); // Debounce delay
+        needRender = true;
     }
-
     else if (removePressed())
     {
-        if (timeInputCursor > 0)
+        int8_t minC = (newSchedule.interval == WEEKLY) ? -1 : 0;
+        if (cursor > minC)
         {
-            timeInputCursor--;
+            cursor--;
+            needRender = true;
         }
+    }
+
+    if (!needRender)
+        return;
+    needRender = false;
+
+    // ── Render row 0 ─────────────────────────────────────────────────────────
+    char buf[17];
+    static const char *dowNames[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+
+    lcd1.setCursor(0, 0);
+    lcd1.print("                ");
+
+    switch (newSchedule.interval)
+    {
+    case DAILY:
+        snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
+        printCentered(buf, 0);
+        break;
+    case WEEKLY:
+        snprintf(buf, sizeof(buf), "%s %02d:%02d", dowNames[dow], hour, minute);
+        printCentered(buf, 0);
+        break;
+    default: // ONCE / YEARLY
+        snprintf(buf, sizeof(buf), "%02d:%02d %02d-%02d", hour, minute, day, month);
+        printCentered(buf, 0);
+        break;
+    }
+
+    // ── Render row 1 (cursor indicators) ─────────────────────────────────────
+    lcd1.setCursor(0, 1);
+    lcd1.print("                ");
+
+    // Re-compute field column positions to match row 0
+    switch (newSchedule.interval)
+    {
+    case DAILY:
+    {
+        // "HH:MM" centred in 16 cols → starts at col 5
+        int base = (16 - 5) / 2;
+        for (int8_t f = 0; f <= 1; f++)
+        {
+            lcd1.setCursor(base + f * 3, 1);
+            lcd1.print(cursor == f ? "^^" : "  ");
+        }
+        break;
+    }
+    case WEEKLY:
+    {
+        // "DDD HH:MM" = 9 chars, centred → starts at col 3
+        int base = (16 - 9) / 2;
+        // dow at base, hour at base+4, min at base+7
+        int cols[3] = {base, base + 4, base + 7};
+        for (int8_t f = -1; f <= 1; f++)
+        {
+            lcd1.setCursor(cols[f + 1], 1);
+            lcd1.print(cursor == f ? "^^" : "  ");
+        }
+        break;
+    }
+    default:
+    {
+        // "HH:MM DD-MM" = 11 chars, centred → starts at col 2
+        int base = (16 - 11) / 2;
+        int cols[4] = {base, base + 3, base + 6, base + 9};
+        for (int8_t f = 0; f <= 3; f++)
+        {
+            lcd1.setCursor(cols[f], 1);
+            lcd1.print(cursor == f ? "^^" : "  ");
+        }
+        break;
+    }
+    }
+
+    // Show OK at far right once past last field
+    if (cursor > (int8_t)maxCursor)
+    {
+        lcd1.setCursor(14, 1);
+        lcd1.print("OK");
     }
 }
 
-//======================================================================================
-// Reminder Selection
-
-const char *reminderOptions[4] = {
-    "On The Time",
-    "- 1 Hour",
-    "- 1 Day"};
-
-byte activeReminder = 0;
-byte lastActiveReminder = -1;
-
-bool initialDisplayReminder = false;
-
-void updateDisplayReminder()
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 5: Reminder
+// ─────────────────────────────────────────────────────────────────────────────
+static void reminderSelection()
 {
-    lcd1.clear();
+    static byte activeReminder = 0;
+    static byte lastActiveReminder = 0xFF;
+    static bool headerPrinted = false;
 
-    lcd1.setCursor((16 - strlen(reminderOptions[activeReminder])) / 2, 1);
-    lcd1.print(reminderOptions[activeReminder]);
-}
-
-void reminderSelection()
-{
-    if (!initialDisplayReminder)
+    if (!headerPrinted)
     {
         lcd1.clear();
-        lcd1.setCursor(0, 0);
-        lcd1.print("Notify Me When");
-        initialDisplayReminder = true;
+        printCentered("Notify Me When", 0);
+        headerPrinted = true;
     }
 
-    // right button
     if (rightPressed())
-    {
-        if (activeReminder < 2)
-        {
-            activeReminder++;
-        }
-        else
-        {
-            activeReminder = 0;
-        }
-        delay(200); // Debounce delay
-    }
-
-    // left button
+        activeReminder = (activeReminder < 2) ? activeReminder + 1 : 0;
     else if (leftPressed())
-    {
-        if (activeReminder > 0)
-        {
-            activeReminder--;
-        }
-        else
-        {
-            activeReminder = 2;
-        }
-        delay(200); // Debounce delay
-    }
-
-    // enter button
+        activeReminder = (activeReminder > 0) ? activeReminder - 1 : 2;
     else if (enterPressed())
     {
-        newSchedule.flags = activeReminder + 1; // Sesuaikan dengan bit yang digunakan untuk reminder
-        // Pindah ke langkah berikutnya, misalnya konfirmasi jadwal
+        newSchedule.flags = activeReminder + 1; // 1=ON_TIME, 2=ONE_HOUR, 3=ONE_DAY
+        headerPrinted = false;
         currentStep = CONFIRMATION;
-        delay(5); // Debounce delay
     }
 
     if (lastActiveReminder != activeReminder)
     {
-        updateDisplayReminder();
+        static const char *opts[3] = {"On The Time", "- 1 Hour", "- 1 Day"};
+        printCentered(opts[activeReminder], 1);
         lastActiveReminder = activeReminder;
     }
 }
 
-//======================================================================================
-// Confirmation
-
-bool initialDisplayConfirmation = false;
-bool confirmationDip = false;
-
-void confirmation()
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 6: Confirmation
+// ─────────────────────────────────────────────────────────────────────────────
+static void confirmation()
 {
-    if (!initialDisplayConfirmation)
+    static bool initialised = false;
+    static bool dipState = false;
+    static byte outcome = 0; // 0=pending, 1=added, 2=cancelled
+    static unsigned long lastDip = 0;
+
+    static const char *dowNames[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+
+    if (!initialised)
     {
         lcd1.clear();
-        lcd1.setCursor(0, 0);
+        char buf[17];
         switch (newSchedule.interval)
         {
-        case 0:
-            lcd1.print("At " + String(hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute) + " On " + (day < 10 ? "0" : "") + String(day) + "-" + (month < 10 ? "0" : "") + String(month));
+        case ONCE_ONLY:
+            snprintf(buf, sizeof(buf), "At %02d:%02d %02d-%02d",
+                     newSchedule.hour, newSchedule.minute,
+                     newSchedule.day, newSchedule.month);
             break;
-
-        case 1:
-            lcd1.print("Every Day " + String(hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute));
+        case DAILY:
+            snprintf(buf, sizeof(buf), "Evry Day %02d:%02d",
+                     newSchedule.hour, newSchedule.minute);
             break;
-        case 2:
-            lcd1.print("Every " + String(dayNames[newSchedule.day]) + " " + String(hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute));
-            break;
-        case 3:
-            lcd1.print("Yearly At " + String(hour < 10 ? "0" : "") + String(hour) + ":" + (minute < 10 ? "0" : "") + String(minute) + " On " + (day < 10 ? "0" : "") + String(day) + "-" + (month < 10 ? "0" : "") + String(month));
+        case WEEKLY:
+        {
+            // day stores 1-7 (Sun=1)
+            byte d = (newSchedule.day >= 1 && newSchedule.day <= 7)
+                         ? newSchedule.day - 1
+                         : 0;
+            snprintf(buf, sizeof(buf), "Evry %s %02d:%02d",
+                     dowNames[d], newSchedule.hour, newSchedule.minute);
             break;
         }
-
-        initialDisplayConfirmation = true;
-    }
-
-    static bool dipStatus = false;
-    char subject[14] = "";
-
-    for (int i = 0; i < 50; i++)
-    {
-        if (subjects[i].subjectId == newSchedule.subject)
-        {
-            strcpy(subject, subjects[i].subject);
+        case YEARLY:
+            snprintf(buf, sizeof(buf), "Yrly %02d:%02d %02d-%02d",
+                     newSchedule.hour, newSchedule.minute,
+                     newSchedule.day, newSchedule.month);
             break;
         }
+        lcd1.setCursor(0, 0);
+        lcd1.print(buf);
+        initialised = true;
+        outcome = 0;
+        dipState = false;
+        lastDip = millis();
     }
 
-    if (blinkLogic(1000))
+    // ── Buttons (only when still pending) ────────────────────────────────────
+    if (outcome == 0)
     {
-        dipStatus = !dipStatus;
-        if (dipStatus)
+        if (enterPressed())
         {
-            lcd1.setCursor(0, 1);
-            lcd1.print(byte(newSchedule.category));
-            lcd1.print(" " + String(subject));
-        }
-        else
-        {
-            lcd1.print("> OK   X Cancel");
-        }
-    }
-
-    static byte lastDisplay = 0; // 1: Added, 2: Cancelled
-
-    if (enterPressed() && lastDisplay == 0)
-    {
-        addSchedule(newSchedule.hour, newSchedule.minute, newSchedule.day, newSchedule.month, newSchedule.category, newSchedule.subject, newSchedule.flags, newSchedule.interval);
-        lastDisplay = 1;
-    }
-
-    if (removePressed() && lastDisplay == 0)
-    {
-        lastDisplay = 2;
-    }
-
-    if (lastDisplay == 1)
-    {
-        if (blinkLogic(1000))
-        {
+            addSchedule(newSchedule.hour, newSchedule.minute,
+                        newSchedule.day, newSchedule.month,
+                        newSchedule.category, newSchedule.subject,
+                        newSchedule.flags, newSchedule.interval);
+            outcome = 1;
             lcd1.clear();
-            lcd1.setCursor(0, 0);
-            lcd1.print("New Schedule");
-            lcd1.setCursor(0, 1);
-            lcd1.print("Added!");
         }
-        else
+        if (removePressed())
         {
-            currentState = MENU;
-            return;
+            outcome = 2;
+            lcd1.clear();
         }
     }
-    else if (lastDisplay == 2)
+
+    // ── Blink feedback (no blinkLogic — use own timer to avoid coupling) ─────
+    unsigned long now = millis();
+    if (now - lastDip >= 1000)
     {
-        if (blinkLogic(1000))
+        lastDip = now;
+        dipState = !dipState;
+
+        if (outcome == 0)
         {
-            lcd1.clear();
-            lcd1.setCursor(0, 0);
-            lcd1.print("Adding Schedule");
+            // Alternate: subject info ↔ OK/Cancel prompt
             lcd1.setCursor(0, 1);
-            lcd1.print("Cancelled!");
+            if (dipState)
+            {
+                // Find subject name
+                char subName[14] = "";
+                for (byte i = 0; i < subjectCount; i++)
+                {
+                    if (subjects[i].subjectId == newSchedule.subject)
+                    {
+                        strncpy(subName, subjects[i].subject, 13);
+                        subName[13] = '\0';
+                        break;
+                    }
+                }
+                char buf[17];
+                snprintf(buf, sizeof(buf), "%c %-13s",
+                         (char)('0' + newSchedule.category), subName);
+                lcd1.print(buf);
+            }
+            else
+            {
+                lcd1.print(">OK      XCancel");
+            }
+        }
+        else if (outcome == 1)
+        {
+            if (dipState)
+            {
+                printCentered("Schedule Added!", 0);
+            }
+            else
+            {
+                initialised = false;
+                currentState = MENU;
+            }
         }
         else
-        {
-            currentState = MENU;
-            return;
+        { // outcome == 2
+            if (dipState)
+            {
+                printCentered("Cancelled!", 0);
+            }
+            else
+            {
+                initialised = false;
+                currentState = MENU;
+            }
         }
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Top-level dispatcher
+// ─────────────────────────────────────────────────────────────────────────────
 void addScheduleInterface()
 {
-    static byte last = SELECT_INTERVAL;
-
-    if (last != currentStep)
+    // ── Step transition banner (shown for ~800 ms, no delay()) ───────────────
+    if (currentStep != lastStep)
     {
-        lcd1.clear();
-        if (blinkLogic(500))
-        {
-            switch (currentStep)
-            {
-            case SELECT_CATEGORY:
-                lcd1.setCursor((16 - 6) / 2, 0);
-                lcd1.print("Select");
-                lcd1.setCursor((16 - 9) / 2, 1);
-                lcd1.print("Category!");
-                break;
-            case SELECT_SUBJECT:
-                lcd1.setCursor((16 - 6) / 2, 0);
-                lcd1.print("Select");
-                lcd1.setCursor((16 - 8) / 2, 1);
-                lcd1.print("Subject!");
-                break;
-            case SELECT_INTERVAL:
-                lcd1.setCursor((16 - 6) / 2, 0);
-                lcd1.print("Select");
-                lcd1.setCursor((16 - 9) / 2, 1);
-                lcd1.print("Interval!");
-                break;
-            case TIME_INPUT:
-                lcd1.setCursor((16 - 5) / 2, 0);
-                lcd1.print("Input");
-                lcd1.setCursor((16 - 11) / 2, 1);
-                lcd1.print("Time Date!");
-                break;
-            case SELECT_REMINDER:
-                lcd1.setCursor((16 - 6) / 2, 0);
-                lcd1.print("Select");
-                lcd1.setCursor((16 - 10) / 2, 1);
-                lcd1.print("Reminder!");
-                break;
-            case CONFIRMATION:
-                lcd1.setCursor((16 - 8) / 2, 0);
-                lcd1.print("Confirm");
-                lcd1.setCursor((16 - 3) / 2, 1);
-                lcd1.print("It!");
-                break;
+        lastStep = currentStep;
+        stepJustChanged = true;
 
-            default:
-                break;
-            }
-            return;
-        }
-        else
-        {
-            last = currentStep;
-            lcd1.clear();
-            return;
-        }
+        lcd1.clear();
+        printCentered(stepTitle(currentStep), 0);
+        return; // show title this cycle
     }
 
+    if (stepJustChanged)
+    {
+        // Wait one more loop cycle so title is visible, then clear and proceed
+        stepJustChanged = false;
+        lcd1.clear();
+        return;
+    }
+
+    // ── Dispatch ─────────────────────────────────────────────────────────────
     switch (currentStep)
     {
     case SELECT_CATEGORY:
@@ -906,7 +747,6 @@ void addScheduleInterface()
     case CONFIRMATION:
         confirmation();
         break;
-
     default:
         break;
     }

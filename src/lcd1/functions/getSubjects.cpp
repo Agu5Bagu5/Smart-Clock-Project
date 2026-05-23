@@ -1,33 +1,38 @@
 #include <Arduino.h>
-#include <data.h>
-#include "time-date.h"
+#include "data.h"
 
-static int adress(int e, int index)
+Subject subjects[SUBJECT_MAX_RAM];
+byte subjectCount = 0;
+
+static int subjectAddr(int offset, int index)
 {
-    return ((0 + e) + 16 * index);
+    return SUBJECT_BASE + SUBJECT_SLOT * index + offset;
 }
 
 void getSubjects()
 {
-    static int RAMIndex = 0;
+    // FIX: RAMIndex was static, so repeated calls kept appending
+    // instead of refreshing. Use a plain local counter and reset
+    // the globals at the top of every call.
+    subjectCount = 0;
+    memset(subjects, 0, sizeof(subjects));
 
-    for (int i = 0; i < 50; i++)
+    for (int i = 0; i < SUBJECT_MAX_EEPROM && subjectCount < SUBJECT_MAX_RAM; i++)
     {
-        byte category = readEEPROM(adress(1, i));
+        byte cat = readEEPROM(subjectAddr(1, i));
 
-        if (category == -2)
-        {
-            break;
-        }
+        if (cat == 0xFF)
+            break; // end of list sentinel
+        if (cat == 0xFE)
+            continue; // deleted slot
 
-        if (category != -1)
+        subjects[subjectCount].category = cat;
+        subjects[subjectCount].subjectId = readEEPROM(subjectAddr(2, i));
+        for (int e = 0; e < 14; e++)
         {
-            subjects[RAMIndex].category = category;
-            subjects[RAMIndex].subjectId = readEEPROM(adress(2, i));
-            for (int e = 0; e < 14; e++)
-            {
-                subjects[RAMIndex].subject[e] = readEEPROM(adress(3, i) + e);
-            }
+            subjects[subjectCount].subject[e] = (char)readEEPROM(subjectAddr(3, i) + e);
         }
+        subjects[subjectCount].subject[13] = '\0'; // guarantee null-termination
+        subjectCount++;
     }
 }
