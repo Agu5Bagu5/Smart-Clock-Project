@@ -134,9 +134,9 @@ static void subjectSelection()
             memset(idTaken, 0, sizeof(idTaken));
             for (int i = 0; i < subjectCount; i++)
             {
-                if (subjects[i].subjectId < SUBJECT_MAX_RAM)
+                if (subjectRAMs[i].subjectId < SUBJECT_MAX_RAM)
                 {
-                    idTaken[subjects[i].subjectId] = 1;
+                    idTaken[subjectRAMs[i].subjectId] = 1;
                 }
             }
             byte newId = 0;
@@ -163,7 +163,7 @@ static void subjectSelection()
     byte count = 0;
     for (byte i = 0; i < subjectCount; i++)
     {
-        if (subjects[i].category == newSchedule.category)
+        if (subjectRAMs[i].category == newSchedule.category)
             count++;
     }
     byte maxSlot = count; // activeSubject ranges 0 .. count
@@ -182,7 +182,7 @@ static void subjectSelection()
             lcd1.setCursor(0, 0);
             lcd1.print("                "); // blank typed area
             lcd1.setCursor(0, 1);
-            lcd1.print("Ok Sp|ABCDEFGH");
+            lcd1.print("                ");
             return;
         }
         else
@@ -191,12 +191,12 @@ static void subjectSelection()
             byte n = 0;
             for (byte i = 0; i < subjectCount; i++)
             {
-                if (subjects[i].category == newSchedule.category)
+                if (subjectRAMs[i].category == newSchedule.category)
                 {
                     n++;
                     if (n == activeSubject)
                     {
-                        newSchedule.subject = subjects[i].subjectId;
+                        newSchedule.subject = subjectRAMs[i].subjectId;
                         break;
                     }
                 }
@@ -222,12 +222,12 @@ static void subjectSelection()
             curName[0] = '\0';
             for (byte i = 0; i < subjectCount; i++)
             {
-                if (subjects[i].category == newSchedule.category)
+                if (subjectRAMs[i].category == newSchedule.category)
                 {
                     n++;
                     if (n == activeSubject)
                     {
-                        strncpy(curName, subjects[i].subject, 15);
+                        strncpy(curName, getSubjectName(subjectRAMs[i].index), 15);
                         curName[15] = '\0';
                         break;
                     }
@@ -251,13 +251,13 @@ static void subjectSelection()
             byte n = 0;
             for (byte i = 0; i < subjectCount; i++)
             {
-                if (subjects[i].category == newSchedule.category)
+                if (subjectRAMs[i].category == newSchedule.category)
                 {
                     n++;
                     if (n == activeSubject - 1)
                     {
                         char buf[4] = "   ";
-                        strncpy(buf, subjects[i].subject, 3);
+                        strncpy(buf, getSubjectName(subjectRAMs[i].index), 3);
                         buf[3] = '\0';
                         lcd1.print(buf);
                         break;
@@ -273,13 +273,13 @@ static void subjectSelection()
             byte n = 0;
             for (byte i = 0; i < subjectCount; i++)
             {
-                if (subjects[i].category == newSchedule.category)
+                if (subjectRAMs[i].category == newSchedule.category)
                 {
                     n++;
                     if (n == activeSubject + 1)
                     {
                         char buf[4] = "   ";
-                        strncpy(buf, subjects[i].subject, 3);
+                        strncpy(buf, getSubjectName(subjectRAMs[i].index), 3);
                         buf[3] = '\0';
                         lcd1.print(buf);
                         break;
@@ -656,19 +656,19 @@ static void confirmation()
             {
                 // Find subject name
                 char subName[14] = "";
+                char subId = 0;
                 for (byte i = 0; i < subjectCount; i++)
                 {
-                    if (subjects[i].subjectId == newSchedule.subject)
+                    if (subjectRAMs[i].subjectId == newSchedule.subject)
                     {
-                        strncpy(subName, subjects[i].subject, 13);
+                        strncpy(subName, getSubjectName(subjectRAMs[i].index), 13);
                         subName[13] = '\0';
+                        subId = subjectRAMs[i].subjectId;
                         break;
                     }
                 }
-                char buf[17];
-                snprintf(buf, sizeof(buf), "%c %-13s",
-                         (char)('0' + newSchedule.category), subName);
-                lcd1.print(buf);
+                lcd1.write(subId); // subject icon
+                lcd1.print(" " + String(subName));
             }
             else
             {

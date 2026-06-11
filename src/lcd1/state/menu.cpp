@@ -8,32 +8,66 @@
 void menu()
 {
     static byte cursor = 0;
-    static byte lastCursor = 0xFF; // force first render
+    static byte lastCursor = 255;
 
-    if (rightPressed() || leftPressed())
+    const char *menuItems[] =
+        {
+            "Add Schedule",
+            "View Schedule",
+            "Subjects"};
+
+    const byte MENU_COUNT = sizeof(menuItems) / sizeof(menuItems[0]);
+
+    // ===== NAVIGATION =====
+    if (rightPressed())
     {
-        cursor = cursor ? 0 : 1;
+        cursor = (cursor + 1) % MENU_COUNT;
     }
 
+    if (leftPressed())
+    {
+        cursor = (cursor == 0)
+                     ? MENU_COUNT - 1
+                     : cursor - 1;
+    }
+
+    // ===== ENTER =====
     if (enterPressed())
     {
-        if (cursor == 0)
+        switch (cursor)
         {
+        case 0:
             currentState = ADD_SCHEDULE;
+            break;
+
+        case 1:
+            currentState = VIEW_SCHEDULE;
+            break;
+
+        case 2:
+            currentState = SUBJECTS;
+            break;
         }
-        // cursor == 1: VIEW_SCHEDULE (add that state when ready)
-        lastCursor = 0xFF; // force re-render on next entry
+
+        lastCursor = 255;
         return;
     }
 
+    // ===== RENDER =====
     if (cursor != lastCursor)
     {
+        byte nextItem = (cursor + 1) % MENU_COUNT;
+
+        lcd1.clear();
+
         lcd1.setCursor(0, 0);
-        lcd1.print(cursor == 0 ? ">Add Schedule   "
-                               : " Add Schedule   ");
+        lcd1.print(">");
+        lcd1.print(menuItems[cursor]);
+
         lcd1.setCursor(0, 1);
-        lcd1.print(cursor == 1 ? ">View Schedules "
-                               : " View Schedules ");
+        lcd1.print(" ");
+        lcd1.print(menuItems[nextItem]);
+
         lastCursor = cursor;
     }
 }

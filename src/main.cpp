@@ -11,8 +11,8 @@
 // NOTE: subjects[], subjectCount, todaySchedules[], todayScheduleCount
 // are defined in getSubjects.cpp / getSchedule.cpp respectively.
 // They are extern-declared in data.h — do NOT redefine them here.
-const int btnRght = 9;
-const int btnLft = 8;
+const int btnRght = 8;
+const int btnLft = 9;
 const int btnEtr = 10;
 const int btnRmv = 11;
 
@@ -66,6 +66,8 @@ void setup()
 
   // Load cached data from EEPROM
   getSubjects();
+
+  cleanupExpiredSchedules();
   getSchedules();
 
   // Debug: print free RAM over Serial so you can spot memory issues
@@ -75,6 +77,6 @@ void setup()
 
 void loop()
 {
-  lcd1Main();
   lcd2Main();
+  lcd1Main();
 }

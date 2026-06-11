@@ -11,9 +11,12 @@ void lcd1Main();
 
 enum State : byte
 {
-    ADD_SCHEDULE = 0,
-    HOMEPAGE,
-    MENU,
+
+    HOMEPAGE = 0,
+    MENU = 1,
+    ADD_SCHEDULE = 2,
+    VIEW_SCHEDULE = 3,
+    SUBJECTS = 4
 };
 
 extern State currentState;
@@ -21,5 +24,7 @@ extern State currentState;
 void menu();
 void addScheduleInterface();
 void homepage();
+void viewSchedules();
+void subjects();
 
 #endif

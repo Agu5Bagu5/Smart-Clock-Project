@@ -22,33 +22,43 @@ static bool risingEdge(int pin, unsigned long &last, bool &wasHigh,
     return false;
 }
 
-bool rightPressed()
+static bool intervalButtonPressed(int pin, unsigned long &last, unsigned long interval = 200)
+{
+    if (digitalRead(pin) == HIGH && millis() - last >= interval)
+    {
+        last = millis();
+        return true;
+    }
+    return false;
+}
+
+bool rightPressed(unsigned long interval)
 {
     static unsigned long last = 0;
     static bool wasHigh = false;
-    return risingEdge(btnRght, last, wasHigh);
+    return interval == 0 ? risingEdge(btnRght, last, wasHigh) : intervalButtonPressed(btnRght, last, interval);
 }
 
-bool leftPressed()
+bool leftPressed(unsigned long interval)
 {
     static unsigned long last = 0;
     static bool wasHigh = false;
-    return risingEdge(btnLft, last, wasHigh);
+    return interval == 0 ? risingEdge(btnLft, last, wasHigh) : intervalButtonPressed(btnLft, last, interval);
 }
 
-bool enterPressed()
+bool enterPressed(unsigned long interval)
 {
     // FIX: original code set last = millis() then immediately tested
     // millis() - last >= 100, which is always false, so lastState
     // never reset to LOW and the button could only fire once.
     static unsigned long last = 0;
     static bool wasHigh = false;
-    return risingEdge(btnEtr, last, wasHigh);
+    return interval == 0 ? risingEdge(btnEtr, last, wasHigh) : intervalButtonPressed(btnEtr, last, interval);
 }
 
-bool removePressed()
+bool removePressed(unsigned long interval)
 {
     static unsigned long last = 0;
     static bool wasHigh = false;
-    return risingEdge(btnRmv, last, wasHigh);
+    return interval == 0 ? risingEdge(btnRmv, last, wasHigh) : intervalButtonPressed(btnRmv, last, interval);
 }

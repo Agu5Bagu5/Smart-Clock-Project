@@ -5,9 +5,9 @@
 #include <RTClib.h>
 
 // "extern" means: This exists somewhere else, don't create a new one!
-extern bool rightPressed();
-extern bool leftPressed();
-extern bool enterPressed();
-extern bool removePressed();
+extern bool rightPressed(unsigned long interval = 0);
+extern bool leftPressed(unsigned long interval = 0);
+extern bool enterPressed(unsigned long interval = 0);
+extern bool removePressed(unsigned long interval = 0);
 
 #endif

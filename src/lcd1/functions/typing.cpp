@@ -13,7 +13,7 @@ static bool dipActive = true;
 
 static const char alphabets[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const int ALPHA_LEN = 26;
-static const int WINDOW_SIZE = 8;
+static const int WINDOW_SIZE = 10;
 static char displayedChars[WINDOW_SIZE];
 
 static char typedText[14];
@@ -32,20 +32,28 @@ static void updateDisplayedChars()
 static void renderRow1()
 {
     // Columns 0-2: context buttons
-    if (activeRow == -2)
+    if (activeRow == -2 && !dipActive)
     {
         lcd1.setCursor(0, 1);
-        lcd1.print("Ok ");
+        lcd1.print("__ ");
     }
     else
     {
         lcd1.setCursor(0, 1);
-        lcd1.print("   ");
+        lcd1.print("Ok ");
     }
 
     // Column 3: separator
-    lcd1.setCursor(3, 1);
-    lcd1.print("Sp|"); // "Sp" = space key
+    if (activeRow == -1 && !dipActive)
+    {
+        lcd1.setCursor(3, 1);
+        lcd1.print("__|");
+    }
+    else
+    {
+        lcd1.setCursor(3, 1);
+        lcd1.print("Sp|");
+    }
 
     // Columns 6-13: letter window (show underscore cursor on active)
     for (int i = 0; i < WINDOW_SIZE; i++)
@@ -83,9 +91,9 @@ const char *typing()
         return typedText; // already done; caller hasn't reset yet
 
     // ── RIGHT ────────────────────────────────────────────────────────────────
-    if (rightPressed())
+    if (rightPressed(200))
     {
-        if (activeRow >= WINDOW_SIZE - 1)
+        if (activeRow >= WINDOW_SIZE - 3)
         {
             // Scroll window right if possible
             if (displayShift + WINDOW_SIZE < ALPHA_LEN)
@@ -96,13 +104,8 @@ const char *typing()
             {
                 // Wrap: jump to OK
                 activeRow = -2;
+                displayShift = 0;
             }
-        }
-        else if (activeRow == -2)
-        {
-            // Wrap back to start
-            activeRow = 0;
-            displayShift = 0;
         }
         else
         {
@@ -113,9 +116,9 @@ const char *typing()
     }
 
     // ── LEFT ─────────────────────────────────────────────────────────────────
-    else if (leftPressed())
+    else if (leftPressed(200))
     {
-        if (activeRow == 0 && displayShift > 0)
+        if (activeRow == 2 && displayShift > 0)
         {
             displayShift--;
         }
@@ -180,6 +183,7 @@ const char *typing()
     if (blinkLogic(400))
     {
         dipActive = !dipActive;
+        updateDisplayedChars();
         renderRow1();
     }
 

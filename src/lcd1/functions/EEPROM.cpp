@@ -4,7 +4,7 @@
 
 void writeEEPROM(int address, byte data)
 {
-    Wire.beginTransmission(0x50);
+    Wire.beginTransmission(0x57);
     Wire.write((int)(address >> 8));   // high byte
     Wire.write((int)(address & 0xFF)); // low byte
     Wire.write(data);
@@ -14,12 +14,12 @@ void writeEEPROM(int address, byte data)
 
 byte readEEPROM(int address)
 {
-    Wire.beginTransmission(0x50);
+    Wire.beginTransmission(0x57);
     Wire.write((int)(address >> 8));
     Wire.write((int)(address & 0xFF));
     Wire.endTransmission();
 
-    Wire.requestFrom(0x50, 1);
+    Wire.requestFrom(0x57, 1);
     if (Wire.available())
     {
         return Wire.read();

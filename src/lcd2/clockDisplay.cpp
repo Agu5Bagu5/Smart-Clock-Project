@@ -5,6 +5,7 @@
 #include "lcd2.h"
 #include "constant.h"
 #include "time-date.h"
+#include "data.h"
 
 // These are the authoritative definitions (extern'd in time-date.h)
 DateTime nowTime;
@@ -20,6 +21,13 @@ void clockDisplay()
 {
     nowTime = rtc.now();
     tomorrowTime = nowTime + TimeSpan(1, 0, 0, 0);
+
+    if (nowTime.hour() == 0 && nowTime.minute() == 0 && nowTime.second() == 0)
+    {
+        // New day, refresh schedules
+        getSchedules();
+        cleanupExpiredSchedules();
+    }
 
     int currentDayIdx = nowTime.dayOfTheWeek();
 

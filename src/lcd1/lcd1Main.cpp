@@ -7,20 +7,26 @@
 
 LiquidCrystal_I2C lcd1(0x27, 16, 2);
 
-State currentState = ADD_SCHEDULE;
+State currentState = HOMEPAGE;
 
 void lcd1Main()
 {
     switch (currentState)
     {
+    case HOMEPAGE:
+        homepage();
+        break;
     case MENU:
         menu();
         break;
     case ADD_SCHEDULE:
         addScheduleInterface();
         break;
-    case HOMEPAGE:
-        homepage();
+    case VIEW_SCHEDULE:
+        viewSchedules();
+        break;
+    case SUBJECTS:
+        subjects();
         break;
     default:
         break;

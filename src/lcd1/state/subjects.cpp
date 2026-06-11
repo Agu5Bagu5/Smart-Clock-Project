@@ -10,70 +10,55 @@
 
 extern RTC_DS3231 rtc;
 
-enum ViewScheduleMode
+enum SubjectMode
 {
-    DATE_SELECT,
-    SCHEDULE_VIEW,
+    CATEGORY_SELECT,
+    SUBJECT_LIST,
     DELETE_CONFIRM
 };
 
-int getSubjectIndex(byte subjectId)
-{
-    for (byte i = 0; i < subjectCount; i++)
-    {
-        if (
-            subjectRAMs[i].subjectId == subjectId)
-        {
-            return subjectRAMs[i].index;
-            break;
-        }
-    }
-    return -1; // Return -1 if subject not found
-}
-
-void reloadVisibleSchedules(
-    const DateTime &selectedDate,
-    byte visibleSchedules[],
+void reloadVisibleSubjects(
+    byte selectedCategory,
+    byte visibleSubjects[],
     byte &visibleCount)
 {
-    getSchedules(selectedDate);
-
     visibleCount = 0;
 
-    for (byte i = 0; i < todayScheduleCount; i++)
+    for (byte i = 0; i < subjectCount; i++)
     {
-        if (todaySchedules[i].day == 0)
+        if (selectedCategory == 0 || subjectRAMs[i].category == selectedCategory)
         {
-            visibleSchedules[visibleCount++] = i;
+            visibleSubjects[visibleCount++] = i;
         }
     }
 }
 
-void viewSchedules()
+void subjects()
 {
     static bool initialized = false;
 
-    static ViewScheduleMode mode;
+    static SubjectMode mode;
 
-    static DateTime selectedDate;
+    static byte selectedCategory = 0;
 
-    static byte visibleSchedules[SCHEDULE_MAX_RAM];
+    static byte visibleSubjects[SUBJECT_MAX_RAM];
     static byte visibleCount = 0;
 
-    static byte currentSchedule = 0;
+    static byte currentSubject = 0;
     static bool deleteYes = false;
 
     static bool forceRender = true;
 
-    const char *days[] =
+    const char *categories[] =
         {
-            "Sun",
-            "Mon",
-            "Tue",
-            "Wed",
-            "Thu",
-            "Fri",
-            "Sat"};
+            "All",
+            "Academic",
+            "Task",
+            "Event",
+            "Personal",
+            "Other"};
+
+    const byte categoryCount = 6;
 
     // =====================================================
     // FIRST ENTRY
@@ -82,12 +67,12 @@ void viewSchedules()
     if (!initialized)
     {
         deleteYes = false;
-        selectedDate = rtc.now();
+        selectedCategory = 0;
 
-        mode = DATE_SELECT;
+        mode = CATEGORY_SELECT;
 
         visibleCount = 0;
-        currentSchedule = 0;
+        currentSubject = 0;
 
         lcd1.clear();
 
@@ -96,47 +81,41 @@ void viewSchedules()
     }
 
     // =====================================================
-    // DATE SELECT MODE
+    // CATEGORY SELECT MODE
     // =====================================================
 
-    if (mode == DATE_SELECT)
+    if (mode == CATEGORY_SELECT)
     {
         if (leftPressed())
         {
-            selectedDate =
-                selectedDate - TimeSpan(1, 0, 0, 0);
+            if (selectedCategory == 0)
+                selectedCategory = categoryCount - 1;
+            else
+                selectedCategory--;
 
             forceRender = true;
         }
 
         if (rightPressed())
         {
-            selectedDate =
-                selectedDate + TimeSpan(1, 0, 0, 0);
+            selectedCategory++;
+
+            if (selectedCategory >= categoryCount)
+                selectedCategory = 0;
 
             forceRender = true;
         }
 
         if (enterPressed())
         {
-            getSchedules(selectedDate);
+            reloadVisibleSubjects(
+                selectedCategory,
+                visibleSubjects,
+                visibleCount);
 
-            visibleCount = 0;
+            currentSubject = 0;
 
-            for (byte i = 0;
-                 i < todayScheduleCount;
-                 i++)
-            {
-                // Ignore tomorrow reminders
-                if (todaySchedules[i].day == 0)
-                {
-                    visibleSchedules[visibleCount++] = i;
-                }
-            }
-
-            currentSchedule = 0;
-
-            mode = SCHEDULE_VIEW;
+            mode = SUBJECT_LIST;
 
             lcd1.clear();
             forceRender = true;
@@ -160,20 +139,10 @@ void viewSchedules()
             lcd1.clear();
 
             lcd1.setCursor(0, 0);
-            lcd1.print("Select Date");
+            lcd1.print("Category");
 
             lcd1.setCursor(0, 1);
-
-            char line[17];
-
-            sprintf(
-                line,
-                "%02d/%02d %s",
-                selectedDate.day(),
-                selectedDate.month(),
-                days[selectedDate.dayOfTheWeek()]);
-
-            lcd1.print(line);
+            lcd1.print(categories[selectedCategory]);
 
             forceRender = false;
         }
@@ -182,7 +151,7 @@ void viewSchedules()
     }
 
     // =====================================================
-    // SCHEDULE VIEW MODE
+    // SUBJECT LIST MODE
     // =====================================================
 
     if (mode == DELETE_CONFIRM)
@@ -195,7 +164,7 @@ void viewSchedules()
 
         if (removePressed())
         {
-            mode = SCHEDULE_VIEW;
+            mode = SUBJECT_LIST;
 
             lcd1.clear();
 
@@ -208,7 +177,7 @@ void viewSchedules()
         {
             if (!deleteYes)
             {
-                mode = SCHEDULE_VIEW;
+                mode = SUBJECT_LIST;
 
                 lcd1.clear();
 
@@ -217,33 +186,33 @@ void viewSchedules()
                 return;
             }
 
-            ScheduleRAM &schedule =
-                todaySchedules[visibleSchedules[currentSchedule]];
+            byte subjectIndex = visibleSubjects[currentSubject];
+            byte subjectId = subjectRAMs[subjectIndex].subjectId;
 
-            int base =
-                SCHEDULE_BASE +
-                schedule.eepromSlot * SCHEDULE_SLOT;
+            int base = SUBJECT_BASE + subjectId * SUBJECT_SLOT;
 
             writeEEPROM(
-                base + 5,
-                FLAG_INACTIVE);
+                base,
+                0xFF);
 
-            reloadVisibleSchedules(
-                selectedDate,
-                visibleSchedules,
+            reloadVisibleSubjects(
+                selectedCategory,
+                visibleSubjects,
                 visibleCount);
 
             if (visibleCount == 0)
             {
-                currentSchedule = 0;
+                currentSubject = 0;
             }
-            else if (currentSchedule >= visibleCount)
+            else if (currentSubject >= visibleCount)
             {
-                currentSchedule =
+                currentSubject =
                     visibleCount - 1;
             }
 
-            mode = SCHEDULE_VIEW;
+            getSubjects();
+
+            mode = SUBJECT_LIST;
 
             lcd1.clear();
 
@@ -258,7 +227,7 @@ void viewSchedules()
         lcd1.clear();
 
         lcd1.setCursor(0, 0);
-        lcd1.print("Delete Sched?");
+        lcd1.print("Delete Subject?");
 
         lcd1.setCursor(0, 1);
 
@@ -280,10 +249,10 @@ void viewSchedules()
     {
         if (visibleCount > 0)
         {
-            if (currentSchedule == 0)
-                currentSchedule = visibleCount - 1;
+            if (currentSubject == 0)
+                currentSubject = visibleCount - 1;
             else
-                currentSchedule--;
+                currentSubject--;
 
             forceRender = true;
         }
@@ -293,10 +262,10 @@ void viewSchedules()
     {
         if (visibleCount > 0)
         {
-            currentSchedule++;
+            currentSubject++;
 
-            if (currentSchedule >= visibleCount)
-                currentSchedule = 0;
+            if (currentSubject >= visibleCount)
+                currentSubject = 0;
 
             forceRender = true;
         }
@@ -317,7 +286,7 @@ void viewSchedules()
 
     if (removePressed())
     {
-        mode = DATE_SELECT;
+        mode = CATEGORY_SELECT;
 
         lcd1.clear();
 
@@ -332,48 +301,33 @@ void viewSchedules()
     lcd1.clear();
 
     // =====================================================
-    // NO SCHEDULE
+    // NO SUBJECTS
     // =====================================================
 
     if (visibleCount == 0)
     {
         lcd1.setCursor(0, 0);
-
-        char header[17];
-
-        sprintf(
-            header,
-            "%02d/%02d %s",
-            selectedDate.day(),
-            selectedDate.month(),
-            days[selectedDate.dayOfTheWeek()]);
-
-        lcd1.print(header);
+        lcd1.print("Subjects");
 
         lcd1.setCursor(0, 1);
-        lcd1.print("No schedules");
+        lcd1.print("No subjects");
 
         forceRender = false;
         return;
     }
 
     // =====================================================
-    // DISPLAY SCHEDULE
+    // DISPLAY SUBJECT
     // =====================================================
 
-    ScheduleRAM &schedule =
-        todaySchedules[visibleSchedules[currentSchedule]];
+    byte subjectIndex = visibleSubjects[currentSubject];
 
     char header[17];
 
     sprintf(
         header,
-        "%02d/%02d %02d:%02d %d/%d",
-        selectedDate.day(),
-        selectedDate.month(),
-        schedule.hour,
-        schedule.minute,
-        currentSchedule + 1,
+        "%d/%d",
+        currentSubject + 1,
         visibleCount);
 
     lcd1.setCursor(0, 0);
@@ -381,11 +335,10 @@ void viewSchedules()
 
     lcd1.setCursor(0, 1);
 
-    lcd1.write(schedule.category);
+    lcd1.write(subjectRAMs[subjectIndex].category);
     lcd1.print(" ");
 
-    lcd1.print(
-        getSubjectName(getSubjectIndex(schedule.subject)));
+    lcd1.print(getSubjectName(subjectRAMs[subjectIndex].index));
 
     forceRender = false;
 }

@@ -15,18 +15,23 @@ byte readEEPROM(int address);
  *   offset 2 : day    (1-31 = once, 0 = daily, 51-57 = weekly, 101-131 = yearly)
  *   offset 3 : month
  *   offset 4 : category
- *   offset 5 : flags  (0 = inactive / slot free, 0xFF = end-of-list sentinel)
+ *   offset 5 : flags  (0 = inactive / slot free, 1 = ON_TIME, 2 = ONE_HOUR, 3 = ONE_DAY, 0xFF = end-of-list sentinel)
  *   offset 6 : subject id
  */
 #define SCHEDULE_BASE 860
 #define SCHEDULE_SLOT 7
 #define SCHEDULE_MAX_EEPROM 100 // reduced from 200 to save iteration time
 #define SCHEDULE_MAX_RAM 20     // reduced from 50 — Uno has only 2 KB SRAM
+#include "time-date.h"          // for decltype(nowTime) in getSchedules()
 
 void addSchedule(byte hour, byte minute, byte day, byte month,
                  byte category, byte subject, byte flags, byte interval);
+
+void cleanupExpiredSchedules(const DateTime &today = nowTime);
+
 void deleteSchedule(int index);
-void getSchedules();
+
+void getSchedules(const decltype(nowTime) &referenceDate = nowTime);
 
 struct Schedule
 {
@@ -67,6 +72,7 @@ struct ScheduleRAM
     byte flags;
     byte category;
     byte subject;
+    byte eepromSlot;
 };
 
 extern ScheduleRAM todaySchedules[SCHEDULE_MAX_RAM];
@@ -83,10 +89,11 @@ extern byte todayScheduleCount; // how many valid entries are in todaySchedules
 #define SUBJECT_BASE 0
 #define SUBJECT_SLOT 16
 #define SUBJECT_MAX_EEPROM 50
-#define SUBJECT_MAX_RAM 20 // reduced from 50
+#define SUBJECT_MAX_RAM 50 // reduced from 50
 
 void addSubject(byte category, byte subjectId, const char *subject);
 void getSubjects();
+char *getSubjectName(byte index);
 
 struct Subject
 {
@@ -95,8 +102,15 @@ struct Subject
     char subject[14];
 };
 
-extern Subject subjects[SUBJECT_MAX_RAM];
+struct SubjectRAM
+{
+    byte category;
+    byte subjectId;
+    byte index;
+};
+
 extern byte subjectCount; // how many valid entries are in subjects[]
+extern SubjectRAM subjectRAMs[SUBJECT_MAX_RAM];
 
 // ─── Category ────────────────────────────────────────────────────────────────
 enum Category : byte
