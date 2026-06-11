@@ -151,7 +151,7 @@ void subjects()
     }
 
     // =====================================================
-    // SUBJECT LIST MODE
+    // DELETE CONFIRM MODE
     // =====================================================
 
     if (mode == DELETE_CONFIRM)
@@ -186,14 +186,15 @@ void subjects()
                 return;
             }
 
+            // FIX: use subjectRAMs[subjectIndex].index (the actual EEPROM slot),
+            // not subjectId (an arbitrary assigned byte).  Also write to offset +1
+            // (the category field) with value 0xFE (deleted marker), not offset 0
+            // (unused padding) with 0xFF (end-sentinel).
             byte subjectIndex = visibleSubjects[currentSubject];
-            byte subjectId = subjectRAMs[subjectIndex].subjectId;
+            int eepromSlot = subjectRAMs[subjectIndex].index;
+            int base = SUBJECT_BASE + eepromSlot * SUBJECT_SLOT;
 
-            int base = SUBJECT_BASE + subjectId * SUBJECT_SLOT;
-
-            writeEEPROM(
-                base,
-                0xFF);
+            writeEEPROM(base + 1, 0xFE); // mark category field as deleted
 
             reloadVisibleSubjects(
                 selectedCategory,
@@ -206,8 +207,7 @@ void subjects()
             }
             else if (currentSubject >= visibleCount)
             {
-                currentSubject =
-                    visibleCount - 1;
+                currentSubject = visibleCount - 1;
             }
 
             getSubjects();
@@ -244,6 +244,10 @@ void subjects()
 
         return;
     }
+
+    // =====================================================
+    // SUBJECT LIST MODE
+    // =====================================================
 
     if (leftPressed())
     {

@@ -33,10 +33,13 @@ enum Step : byte
     CONFIRMATION
 };
 static Step currentStep = SELECT_CATEGORY;
-static Step lastStep = (Step)0xFF;   // force initial transition
-static bool stepJustChanged = false; // show "step title" for one cycle
+static Step lastStep = (Step)0xFF;
+static bool stepJustChanged = false;
 
-// Helper: print a centred string on a given row (clears row first)
+// FIX: track whether the flow has been initialised for this visit to ADD_SCHEDULE.
+// Allows full reset when the user leaves and returns.
+static bool flowInitialised = false;
+
 static void printCentered(const char *s, byte row)
 {
     char buf[17];
@@ -51,7 +54,6 @@ static void printCentered(const char *s, byte row)
     lcd1.print(buf);
 }
 
-// ─── Transition banner ────────────────────────────────────────────────────────
 static const char *stepTitle(Step s)
 {
     switch (s)
@@ -83,30 +85,24 @@ static void categorySelection()
 
     if (lastActiveCat != activeCat)
     {
-        // Row 0: name
         static const char *catNames[4] = {"Homework", "Exam", "Personal", "Other"};
         printCentered(catNames[activeCat], 0);
 
-        // Row 1: four indicators
         lcd1.setCursor(0, 1);
         lcd1.print("                ");
         for (byte i = 0; i < 4; i++)
         {
             lcd1.setCursor(4 + i * 3, 1);
             lcd1.print(activeCat == i ? ">" : " ");
-            lcd1.write(i); // custom icon
+            lcd1.write(i);
         }
         lastActiveCat = activeCat;
     }
 
     if (rightPressed())
-    {
         activeCat = (activeCat < OTHER) ? activeCat + 1 : HOMEWORK;
-    }
     else if (leftPressed())
-    {
         activeCat = (activeCat > HOMEWORK) ? activeCat - 1 : OTHER;
-    }
     else if (enterPressed())
     {
         newSchedule.category = activeCat;
@@ -123,21 +119,17 @@ static void subjectSelection()
     static byte lastActiveSubject = 0xFF;
     static bool inAddMode = false;
 
-    // ── Add-subject typing sub-mode ──────────────────────────────────────────
     if (inAddMode)
     {
         const char *result = typing();
         if (result[0] != '\0')
         {
-            // User confirmed a name — find a free subjectId
             byte idTaken[SUBJECT_MAX_RAM];
             memset(idTaken, 0, sizeof(idTaken));
             for (int i = 0; i < subjectCount; i++)
             {
                 if (subjectRAMs[i].subjectId < SUBJECT_MAX_RAM)
-                {
                     idTaken[subjectRAMs[i].subjectId] = 1;
-                }
             }
             byte newId = 0;
             for (byte i = 0; i < SUBJECT_MAX_RAM; i++)
@@ -157,18 +149,14 @@ static void subjectSelection()
         return;
     }
 
-    // ── Count subjects for this category ─────────────────────────────────────
-    // slot 0 is always "Add Subject"
-    // slots 1..N are real subjects of this category
     byte count = 0;
     for (byte i = 0; i < subjectCount; i++)
     {
         if (subjectRAMs[i].category == newSchedule.category)
             count++;
     }
-    byte maxSlot = count; // activeSubject ranges 0 .. count
+    byte maxSlot = count;
 
-    // ── Navigation ───────────────────────────────────────────────────────────
     if (rightPressed() && activeSubject < maxSlot)
         activeSubject++;
     else if (leftPressed() && activeSubject > 0)
@@ -180,14 +168,13 @@ static void subjectSelection()
             inAddMode = true;
             lcd1.clear();
             lcd1.setCursor(0, 0);
-            lcd1.print("                "); // blank typed area
+            lcd1.print("                ");
             lcd1.setCursor(0, 1);
             lcd1.print("                ");
             return;
         }
         else
         {
-            // Find the Nth subject of this category
             byte n = 0;
             for (byte i = 0; i < subjectCount; i++)
             {
@@ -205,12 +192,10 @@ static void subjectSelection()
         }
     }
 
-    // ── Render (only when cursor changed) ────────────────────────────────────
     if (lastActiveSubject != activeSubject)
     {
         lcd1.clear();
 
-        // Current name (centred, row 0)
         char curName[16];
         if (activeSubject == 0)
         {
@@ -236,7 +221,6 @@ static void subjectSelection()
         }
         printCentered(curName, 0);
 
-        // Left hint (row 1 left)
         lcd1.setCursor(0, 1);
         if (activeSubject == 0)
         {
@@ -266,7 +250,6 @@ static void subjectSelection()
             }
         }
 
-        // Right hint (row 1 right)
         lcd1.setCursor(13, 1);
         if (activeSubject < maxSlot)
         {
@@ -316,7 +299,6 @@ static void intervalSelection()
 
     if (lastActiveInterval != activeInterval)
     {
-        // Layout: row0 left | row0 right / row1 left | row1 right
         static const char labels[4][7] = {"Once", "Daily", "Weekly", "Yearly"};
         lcd1.clear();
         for (byte i = 0; i < 4; i++)
@@ -324,10 +306,7 @@ static void intervalSelection()
             byte col = (i % 2 == 0) ? 0 : 9;
             byte row = i / 2;
             lcd1.setCursor(col, row);
-            if (activeInterval == i)
-                lcd1.print(">");
-            else
-                lcd1.print(" ");
+            lcd1.print(activeInterval == i ? ">" : " ");
             lcd1.print(labels[i]);
         }
         lastActiveInterval = activeInterval;
@@ -343,12 +322,11 @@ static void timeInput()
     static byte minute = 0;
     static byte day = 1;
     static byte month = 1;
-    static byte dow = 0;      // day of week 0=Sun
-    static int8_t cursor = 0; // which field is active
+    static byte dow = 0;
+    static int8_t cursor = 0;
     static bool needRender = true;
-
-    // Initialise from RTC on first entry
     static bool initialised = false;
+
     if (!initialised)
     {
         hour = nowTime.hour();
@@ -361,7 +339,6 @@ static void timeInput()
         initialised = true;
     }
 
-    // Fields: -1=dow(weekly only), 0=hour, 1=min, 2=day(once/yearly), 3=month(once/yearly)
     byte maxCursor;
     switch (newSchedule.interval)
     {
@@ -370,7 +347,7 @@ static void timeInput()
         break;
     case WEEKLY:
         maxCursor = 1;
-        break; // cursor goes -1,0,1
+        break;
     case ONCE_ONLY:
     case YEARLY:
         maxCursor = 3;
@@ -380,7 +357,6 @@ static void timeInput()
         break;
     }
 
-    // ── Buttons ──────────────────────────────────────────────────────────────
     if (rightPressed())
     {
         switch (cursor)
@@ -427,21 +403,21 @@ static void timeInput()
     }
     else if (enterPressed())
     {
-        int8_t maxC = (int8_t)maxCursor;
-        if (cursor < maxC)
+        if (cursor < (int8_t)maxCursor)
         {
             cursor++;
         }
         else
         {
-            // Done
+            // FIX: removed the dead "cursor > maxCursor → show OK" branch;
+            // on the final field we go directly to the next step.
             newSchedule.hour = hour;
             newSchedule.minute = minute;
             newSchedule.day = day;
             newSchedule.month = month;
             if (newSchedule.interval == WEEKLY)
                 newSchedule.day = dow + 1;
-            initialised = false; // reset for next use
+            initialised = false;
             currentStep = SELECT_REMINDER;
         }
         needRender = true;
@@ -460,7 +436,6 @@ static void timeInput()
         return;
     needRender = false;
 
-    // ── Render row 0 ─────────────────────────────────────────────────────────
     char buf[17];
     static const char *dowNames[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
@@ -477,22 +452,19 @@ static void timeInput()
         snprintf(buf, sizeof(buf), "%s %02d:%02d", dowNames[dow], hour, minute);
         printCentered(buf, 0);
         break;
-    default: // ONCE / YEARLY
+    default:
         snprintf(buf, sizeof(buf), "%02d:%02d %02d-%02d", hour, minute, day, month);
         printCentered(buf, 0);
         break;
     }
 
-    // ── Render row 1 (cursor indicators) ─────────────────────────────────────
     lcd1.setCursor(0, 1);
     lcd1.print("                ");
 
-    // Re-compute field column positions to match row 0
     switch (newSchedule.interval)
     {
     case DAILY:
     {
-        // "HH:MM" centred in 16 cols → starts at col 5
         int base = (16 - 5) / 2;
         for (int8_t f = 0; f <= 1; f++)
         {
@@ -503,9 +475,7 @@ static void timeInput()
     }
     case WEEKLY:
     {
-        // "DDD HH:MM" = 9 chars, centred → starts at col 3
         int base = (16 - 9) / 2;
-        // dow at base, hour at base+4, min at base+7
         int cols[3] = {base, base + 4, base + 7};
         for (int8_t f = -1; f <= 1; f++)
         {
@@ -516,7 +486,6 @@ static void timeInput()
     }
     default:
     {
-        // "HH:MM DD-MM" = 11 chars, centred → starts at col 2
         int base = (16 - 11) / 2;
         int cols[4] = {base, base + 3, base + 6, base + 9};
         for (int8_t f = 0; f <= 3; f++)
@@ -526,13 +495,6 @@ static void timeInput()
         }
         break;
     }
-    }
-
-    // Show OK at far right once past last field
-    if (cursor > (int8_t)maxCursor)
-    {
-        lcd1.setCursor(14, 1);
-        lcd1.print("OK");
     }
 }
 
@@ -558,7 +520,7 @@ static void reminderSelection()
         activeReminder = (activeReminder > 0) ? activeReminder - 1 : 2;
     else if (enterPressed())
     {
-        newSchedule.flags = activeReminder + 1; // 1=ON_TIME, 2=ONE_HOUR, 3=ONE_DAY
+        newSchedule.flags = activeReminder + 1;
         headerPrinted = false;
         currentStep = CONFIRMATION;
     }
@@ -578,7 +540,7 @@ static void confirmation()
 {
     static bool initialised = false;
     static bool dipState = false;
-    static byte outcome = 0; // 0=pending, 1=added, 2=cancelled
+    static byte outcome = 0;
     static unsigned long lastDip = 0;
 
     static const char *dowNames[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
@@ -600,7 +562,6 @@ static void confirmation()
             break;
         case WEEKLY:
         {
-            // day stores 1-7 (Sun=1)
             byte d = (newSchedule.day >= 1 && newSchedule.day <= 7)
                          ? newSchedule.day - 1
                          : 0;
@@ -622,7 +583,6 @@ static void confirmation()
         lastDip = millis();
     }
 
-    // ── Buttons (only when still pending) ────────────────────────────────────
     if (outcome == 0)
     {
         if (enterPressed())
@@ -641,7 +601,6 @@ static void confirmation()
         }
     }
 
-    // ── Blink feedback (no blinkLogic — use own timer to avoid coupling) ─────
     unsigned long now = millis();
     if (now - lastDip >= 1000)
     {
@@ -650,25 +609,26 @@ static void confirmation()
 
         if (outcome == 0)
         {
-            // Alternate: subject info ↔ OK/Cancel prompt
             lcd1.setCursor(0, 1);
             if (dipState)
             {
-                // Find subject name
+                // FIX: replaced "lcd1.print("" + String(subName))" with a plain
+                // char buffer to avoid Arduino String heap allocation on 2 KB SRAM.
                 char subName[14] = "";
-                char subId = 0;
+                byte subId = 0;
                 for (byte i = 0; i < subjectCount; i++)
                 {
                     if (subjectRAMs[i].subjectId == newSchedule.subject)
                     {
                         strncpy(subName, getSubjectName(subjectRAMs[i].index), 13);
                         subName[13] = '\0';
-                        subId = subjectRAMs[i].subjectId;
+                        subId = subjectRAMs[i].category; // use category as icon index
                         break;
                     }
                 }
-                lcd1.write(subId); // subject icon
-                lcd1.print(" " + String(subName));
+                lcd1.write(subId);
+                lcd1.print(" ");
+                lcd1.print(subName);
             }
             else
             {
@@ -684,11 +644,13 @@ static void confirmation()
             else
             {
                 initialised = false;
+                // FIX: also reset the whole flow so re-entry starts clean.
+                flowInitialised = false;
                 currentState = MENU;
             }
         }
         else
-        { // outcome == 2
+        {
             if (dipState)
             {
                 printCentered("Cancelled!", 0);
@@ -696,6 +658,7 @@ static void confirmation()
             else
             {
                 initialised = false;
+                flowInitialised = false;
                 currentState = MENU;
             }
         }
@@ -707,7 +670,18 @@ static void confirmation()
 // ─────────────────────────────────────────────────────────────────────────────
 void addScheduleInterface()
 {
-    // ── Step transition banner (shown for ~800 ms, no delay()) ───────────────
+    // FIX: reset all flow state whenever we enter ADD_SCHEDULE fresh.
+    // Without this, returning after cancelling resumes mid-flow with stale data.
+    if (!flowInitialised)
+    {
+        currentStep = SELECT_CATEGORY;
+        lastStep = (Step)0xFF;
+        stepJustChanged = false;
+        memset(&newSchedule, 0, sizeof(newSchedule));
+        flowInitialised = true;
+    }
+
+    // ── Step transition banner ────────────────────────────────────────────────
     if (currentStep != lastStep)
     {
         lastStep = currentStep;
@@ -715,12 +689,11 @@ void addScheduleInterface()
 
         lcd1.clear();
         printCentered(stepTitle(currentStep), 0);
-        return; // show title this cycle
+        return;
     }
 
     if (stepJustChanged)
     {
-        // Wait one more loop cycle so title is visible, then clear and proceed
         stepJustChanged = false;
         lcd1.clear();
         return;

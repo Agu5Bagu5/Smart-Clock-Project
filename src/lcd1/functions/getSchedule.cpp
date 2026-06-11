@@ -19,21 +19,14 @@ void sortSchedules()
         {
             bool swapNeeded = false;
 
-            // Today before tomorrow
             if (todaySchedules[i].day > todaySchedules[j].day)
             {
                 swapNeeded = true;
             }
             else if (todaySchedules[i].day == todaySchedules[j].day)
             {
-                uint16_t timeA =
-                    todaySchedules[i].hour * 60 +
-                    todaySchedules[i].minute;
-
-                uint16_t timeB =
-                    todaySchedules[j].hour * 60 +
-                    todaySchedules[j].minute;
-
+                uint16_t timeA = todaySchedules[i].hour * 60 + todaySchedules[i].minute;
+                uint16_t timeB = todaySchedules[j].hour * 60 + todaySchedules[j].minute;
                 if (timeA > timeB)
                     swapNeeded = true;
             }
@@ -49,10 +42,11 @@ void sortSchedules()
 }
 
 // ──────────────────────────────────────────────────────────────
-//  Delete expired one-time schedules
-//  Call once when a new day begins
+//  Delete expired one-time schedules.
+//  FIX: default argument must only appear in the declaration (data.h),
+//  not in the definition — removed here.
 // ──────────────────────────────────────────────────────────────
-void cleanupExpiredSchedules(const DateTime &today = nowTime)
+void cleanupExpiredSchedules(const DateTime &today)
 {
     DateTime yesterday = today - TimeSpan(1, 0, 0, 0);
 
@@ -74,16 +68,13 @@ void cleanupExpiredSchedules(const DateTime &today = nowTime)
         // Skip recurring schedules
         if (rawDay == 0)
             continue;
-
         if (rawDay >= 51 && rawDay <= 57)
             continue;
-
         if (rawDay >= 101 && rawDay <= 131)
             continue;
 
         // Delete one-time schedule from yesterday
-        if (rawDay == yesterday.day() &&
-            rawMonth == yesterday.month())
+        if (rawDay == yesterday.day() && rawMonth == yesterday.month())
         {
             writeEEPROM(base + 5, FLAG_INACTIVE);
         }
@@ -91,14 +82,14 @@ void cleanupExpiredSchedules(const DateTime &today = nowTime)
 }
 
 // ──────────────────────────────────────────────────────────────
-//  Load schedules for a given date
+//  Load schedules for a given date.
+//  FIX: default argument removed from definition — keep only in data.h.
 // ──────────────────────────────────────────────────────────────
-void getSchedules(const DateTime &referenceDate = nowTime)
+void getSchedules(const DateTime &referenceDate)
 {
     todayScheduleCount = 0;
 
-    DateTime nextDay =
-        referenceDate + TimeSpan(1, 0, 0, 0);
+    DateTime nextDay = referenceDate + TimeSpan(1, 0, 0, 0);
 
     for (int i = 0; i < SCHEDULE_MAX_EEPROM; i++)
     {
@@ -123,9 +114,6 @@ void getSchedules(const DateTime &referenceDate = nowTime)
         byte compareDay = rawDay;
         byte compareMonth = rawMonth;
 
-        // ──────────────────────────
-        //  Decode type
-        // ──────────────────────────
         if (rawDay == 0)
         {
             isDaily = true;
@@ -148,122 +136,53 @@ void getSchedules(const DateTime &referenceDate = nowTime)
         bool matchToday = false;
         bool matchTomorrow = false;
 
-        // ──────────────────────────
-        //  Daily
-        // ──────────────────────────
         if (isDaily)
         {
             matchToday = true;
         }
-
-        // ──────────────────────────
-        //  Weekly
-        // ──────────────────────────
         else if (isWeekly)
         {
-            if (compareDay ==
-                referenceDate.dayOfTheWeek() + 1)
-            {
+            if (compareDay == referenceDate.dayOfTheWeek() + 1)
                 matchToday = true;
-            }
-
-            if (compareDay ==
-                nextDay.dayOfTheWeek() + 1)
-            {
+            if (compareDay == nextDay.dayOfTheWeek() + 1)
                 matchTomorrow = true;
-            }
         }
-
-        // ──────────────────────────
-        //  Yearly
-        // ──────────────────────────
         else if (isYearly)
         {
-            if (compareDay == referenceDate.day() &&
-                compareMonth == referenceDate.month())
-            {
+            if (compareDay == referenceDate.day() && compareMonth == referenceDate.month())
                 matchToday = true;
-            }
-
-            if (compareDay == nextDay.day() &&
-                compareMonth == nextDay.month())
-            {
+            if (compareDay == nextDay.day() && compareMonth == nextDay.month())
                 matchTomorrow = true;
-            }
+        }
+        else // once
+        {
+            if (compareDay == referenceDate.day() && compareMonth == referenceDate.month())
+                matchToday = true;
+            if (compareDay == nextDay.day() && compareMonth == nextDay.month())
+                matchTomorrow = true;
         }
 
-        // ──────────────────────────
-        //  One-time
-        // ──────────────────────────
-        else
+        if (matchToday && todayScheduleCount < SCHEDULE_MAX_RAM)
         {
-            if (compareDay == referenceDate.day() &&
-                compareMonth == referenceDate.month())
-            {
-                matchToday = true;
-            }
-
-            if (compareDay == nextDay.day() &&
-                compareMonth == nextDay.month())
-            {
-                matchTomorrow = true;
-            }
-        }
-
-        // ──────────────────────────
-        //  Today's schedule
-        // ──────────────────────────
-        if (matchToday &&
-            todayScheduleCount < SCHEDULE_MAX_RAM)
-        {
-            todaySchedules[todayScheduleCount].hour =
-                readEEPROM(base + 0);
-
-            todaySchedules[todayScheduleCount].minute =
-                readEEPROM(base + 1);
-
+            todaySchedules[todayScheduleCount].hour = readEEPROM(base + 0);
+            todaySchedules[todayScheduleCount].minute = readEEPROM(base + 1);
             todaySchedules[todayScheduleCount].day = 0;
-
-            todaySchedules[todayScheduleCount].flags =
-                flags;
-
-            todaySchedules[todayScheduleCount].category =
-                readEEPROM(base + 4);
-
-            todaySchedules[todayScheduleCount].subject =
-                readEEPROM(base + 6);
-
+            todaySchedules[todayScheduleCount].flags = flags;
+            todaySchedules[todayScheduleCount].category = readEEPROM(base + 4);
+            todaySchedules[todayScheduleCount].subject = readEEPROM(base + 6);
             todaySchedules[todayScheduleCount].eepromSlot = i;
-
             todayScheduleCount++;
         }
 
-        // ──────────────────────────
-        //  Tomorrow reminder
-        // ──────────────────────────
-        if (matchTomorrow &&
-            flags == ONE_DAY_BEFORE &&
-            todayScheduleCount < SCHEDULE_MAX_RAM)
+        if (matchTomorrow && flags == ONE_DAY_BEFORE && todayScheduleCount < SCHEDULE_MAX_RAM)
         {
-            todaySchedules[todayScheduleCount].hour =
-                readEEPROM(base + 0);
-
-            todaySchedules[todayScheduleCount].minute =
-                readEEPROM(base + 1);
-
+            todaySchedules[todayScheduleCount].hour = readEEPROM(base + 0);
+            todaySchedules[todayScheduleCount].minute = readEEPROM(base + 1);
             todaySchedules[todayScheduleCount].day = 1;
-
-            todaySchedules[todayScheduleCount].flags =
-                flags;
-
-            todaySchedules[todayScheduleCount].category =
-                readEEPROM(base + 4);
-
-            todaySchedules[todayScheduleCount].subject =
-                readEEPROM(base + 6);
-
+            todaySchedules[todayScheduleCount].flags = flags;
+            todaySchedules[todayScheduleCount].category = readEEPROM(base + 4);
+            todaySchedules[todayScheduleCount].subject = readEEPROM(base + 6);
             todaySchedules[todayScheduleCount].eepromSlot = i;
-
             todayScheduleCount++;
         }
     }

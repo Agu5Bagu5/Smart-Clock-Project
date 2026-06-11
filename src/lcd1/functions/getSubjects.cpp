@@ -11,9 +11,6 @@ static int subjectAddr(int offset, int index)
 
 void getSubjects()
 {
-    // FIX: RAMIndex was static, so repeated calls kept appending
-    // instead of refreshing. Use a plain local counter and reset
-    // the globals at the top of every call.
     subjectCount = 0;
     memset(subjectRAMs, 0, sizeof(subjectRAMs));
 
@@ -35,16 +32,24 @@ void getSubjects()
 
 char *getSubjectName(byte index)
 {
-    static char buffer[15]; // Adjust size as needed
+    static char buffer[15];
     memset(buffer, 0, sizeof(buffer));
 
+    // FIX: was subjectAddr(3 + j, index) which computes SUBJECT_BASE + 16*index + (3+j).
+    // That happens to be numerically identical to subjectAddr(3, index) + j, but only
+    // because subjectAddr is linear.  Write it unambiguously to match addSubject.cpp,
+    // which writes chars at subjectAddr(3, i) + e.
+    int base = subjectAddr(3, index);
     for (size_t j = 0; j < sizeof(buffer) - 1; j++)
     {
-        byte c = readEEPROM(subjectAddr(3 + j, index));
-        buffer[j] = (c == 0) ? '\0' : c; // null-terminate on 0
+        byte c = readEEPROM(base + j);
         if (c == 0)
+        {
+            buffer[j] = '\0';
             break;
+        }
+        buffer[j] = (char)c;
     }
-    buffer[sizeof(buffer) - 1] = '\0'; // ensure null-termination
+    buffer[sizeof(buffer) - 1] = '\0';
     return buffer;
 }

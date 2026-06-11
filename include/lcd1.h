@@ -6,12 +6,13 @@
 const char *typing();
 void resetTyping();
 
-void lcd1Config();
+// FIX: lcd1Config() was declared but never defined anywhere — removed to
+// prevent linker confusion.
+
 void lcd1Main();
 
 enum State : byte
 {
-
     HOMEPAGE = 0,
     MENU = 1,
     ADD_SCHEDULE = 2,

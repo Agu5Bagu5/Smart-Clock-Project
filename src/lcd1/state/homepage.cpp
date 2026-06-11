@@ -38,82 +38,128 @@ void homepage()
 
     static int indexUpcoming = 0;
     static int indexNext = 1;
-    static int countSummary = todayScheduleCount;
-    static int countLeft = todayScheduleCount - indexUpcoming;
-    bool isThereNext = true;
-
     static HomepageState state = HOMEPAGE_UPCOMING;
+    static unsigned long lastStateChange = 0;
+
+    // FIX: do not use static initialisers for values derived from runtime data —
+    // they only run once at program start when todayScheduleCount is still 0.
+    // Compute them fresh each call instead.
+    int countSummary = todayScheduleCount;
+    int countLeft = todayScheduleCount - indexUpcoming;
 
     if (nowTime.hour() == 0 && nowTime.minute() == 0 && nowTime.second() == 0)
     {
-        // New day, refresh schedules
+        // New day: reset indices
         indexUpcoming = 0;
         indexNext = 1;
         countSummary = todayScheduleCount;
-        countLeft = todayScheduleCount - indexUpcoming;
+        countLeft = todayScheduleCount;
+        state = HOMEPAGE_UPCOMING;
     }
 
-    signed int upcomingTimeLeft = (todaySchedules[indexUpcoming].hour * 60 + todaySchedules[indexUpcoming].minute) - (nowTime.hour() * 60 + nowTime.minute());
-    unsigned int nextTimeLeft = (todaySchedules[indexNext].hour * 60 + todaySchedules[indexNext].minute) - (nowTime.hour() * 60 + nowTime.minute());
+    // FIX: isThereNext guards ALL accesses to indexNext / nextEvent below.
+    bool isThereNext = (indexNext < todayScheduleCount);
 
-    if (upcomingTimeLeft < 0 && indexUpcoming < todayScheduleCount - 1 && indexNext < todayScheduleCount - 1)
+    // FIX: upcomingTimeLeft and nextTimeLeft must both be signed so that
+    // past-due events yield a negative value rather than wrapping to ~65535.
+    signed int upcomingTimeLeft =
+        (signed int)(todaySchedules[indexUpcoming].hour * 60 + todaySchedules[indexUpcoming].minute) -
+        (signed int)(nowTime.hour() * 60 + nowTime.minute());
+
+    // FIX: only compute nextTimeLeft when indexNext is in range.
+    signed int nextTimeLeft = 0;
+    if (isThereNext)
     {
-        indexUpcoming++;
-        indexNext++;
-        countLeft--;
-        upcomingTimeLeft = (todaySchedules[indexUpcoming].hour * 60 + todaySchedules[indexUpcoming].minute) - (nowTime.hour() * 60 + nowTime.minute());
-        nextTimeLeft = (todaySchedules[indexNext].hour * 60 + todaySchedules[indexNext].minute) - (nowTime.hour() * 60 + nowTime.minute());
-    }
-    else if (upcomingTimeLeft < 0 && indexUpcoming < todayScheduleCount - 1 && indexNext == todayScheduleCount - 1)
-    {
-        indexUpcoming++;
-        countLeft--;
-        isThereNext = false;
-        upcomingTimeLeft = (todaySchedules[indexUpcoming].hour * 60 + todaySchedules[indexUpcoming].minute) - (nowTime.hour() * 60 + nowTime.minute());
-    }
-    else if (upcomingTimeLeft < 0)
-    {
-        state = HOMEPAGE_NO_EVENT;
+        nextTimeLeft =
+            (signed int)(todaySchedules[indexNext].hour * 60 + todaySchedules[indexNext].minute) -
+            (signed int)(nowTime.hour() * 60 + nowTime.minute());
     }
 
-    ScheduleRAM upcomingEvent = todaySchedules[indexUpcoming];
-    ScheduleRAM nextEvent = todaySchedules[indexNext];
-
-    unsigned long interval = state == HOMEPAGE_UPCOMING ? DELAY_UPCOMING : (state == HOMEPAGE_NEXT ? DELAY_NEXT : DELAY_SUMMARY);
-
-    static int subjectNextIndex = 0;
-    static int subjectUpcomingIndex = 0;
-
-    for (byte i = 0; i < subjectCount; i++)
+    // Advance past expired events
+    if (upcomingTimeLeft < 0)
     {
-        if (
-            subjectRAMs[i].subjectId == nextEvent.subject)
+        if (indexUpcoming < todayScheduleCount - 1)
         {
-            subjectNextIndex = subjectRAMs[i].index;
-            break;
+            indexUpcoming++;
+            countLeft--;
+            isThereNext = (indexNext < todayScheduleCount && indexNext > indexUpcoming);
+
+            if (isThereNext && indexNext < indexUpcoming)
+                indexNext = indexUpcoming + 1;
+
+            isThereNext = (indexNext < todayScheduleCount);
+
+            upcomingTimeLeft =
+                (signed int)(todaySchedules[indexUpcoming].hour * 60 + todaySchedules[indexUpcoming].minute) -
+                (signed int)(nowTime.hour() * 60 + nowTime.minute());
+
+            if (isThereNext)
+            {
+                nextTimeLeft =
+                    (signed int)(todaySchedules[indexNext].hour * 60 + todaySchedules[indexNext].minute) -
+                    (signed int)(nowTime.hour() * 60 + nowTime.minute());
+            }
+        }
+        else
+        {
+            state = HOMEPAGE_NO_EVENT;
         }
     }
 
+    ScheduleRAM upcomingEvent = todaySchedules[indexUpcoming];
+
+    // FIX: only read nextEvent when index is valid.
+    ScheduleRAM nextEvent;
+    if (isThereNext)
+        nextEvent = todaySchedules[indexNext];
+
+    unsigned long interval =
+        (state == HOMEPAGE_UPCOMING) ? DELAY_UPCOMING : (state == HOMEPAGE_NEXT) ? DELAY_NEXT
+                                                                                 : DELAY_SUMMARY;
+
+    // Subject name lookup
+    int subjectUpcomingIndex = 0;
     for (byte i = 0; i < subjectCount; i++)
     {
-        if (
-            subjectRAMs[i].subjectId == upcomingEvent.subject)
+        if (subjectRAMs[i].subjectId == upcomingEvent.subject)
         {
             subjectUpcomingIndex = subjectRAMs[i].index;
             break;
         }
     }
 
-    String bufUTop = " " + String(getSubjectName(subjectUpcomingIndex));
-    String bufUBottom = String(upcomingEvent.hour) + ":" + (upcomingEvent.minute < 10 ? "0" : "") + String(upcomingEvent.minute) + " in " + String(upcomingTimeLeft) + " min";
+    int subjectNextIndex = 0;
+    if (isThereNext)
+    {
+        for (byte i = 0; i < subjectCount; i++)
+        {
+            if (subjectRAMs[i].subjectId == nextEvent.subject)
+            {
+                subjectNextIndex = subjectRAMs[i].index;
+                break;
+            }
+        }
+    }
 
-    String bufTop = " " + String(getSubjectName(subjectNextIndex));
-    String bufBottom = String(nextEvent.hour) + ":" + (nextEvent.minute < 10 ? "0" : "") + String(nextEvent.minute) + " in " + String(nextTimeLeft) + " min";
+    // FIX: replace Arduino String() with char arrays to avoid heap fragmentation.
+    char bufUTop[17], bufUBottom[17];
+    snprintf(bufUTop, sizeof(bufUTop), " %.14s", getSubjectName(subjectUpcomingIndex));
+    snprintf(bufUBottom, sizeof(bufUBottom), "%d:%02d in %d min",
+             upcomingEvent.hour, upcomingEvent.minute, upcomingTimeLeft);
 
-    String bufSTop = "Today: " + String(countSummary) + " event" + (countSummary > 1 ? "s" : "");
-    String bufSBottom = String(countLeft) + " left";
+    char bufTop[17], bufBottom[17];
+    if (isThereNext)
+    {
+        snprintf(bufTop, sizeof(bufTop), " %.14s", getSubjectName(subjectNextIndex));
+        snprintf(bufBottom, sizeof(bufBottom), "%d:%02d in %d min",
+                 nextEvent.hour, nextEvent.minute, nextTimeLeft);
+    }
 
-    static unsigned long lastStateChange = 0;
+    char bufSTop[17], bufSBottom[17];
+    snprintf(bufSTop, sizeof(bufSTop), "Today: %d event%s",
+             countSummary, countSummary != 1 ? "s" : "");
+    snprintf(bufSBottom, sizeof(bufSBottom), "%d left", countLeft);
+
     if (millis() - lastStateChange >= interval || state == HOMEPAGE_NO_EVENT)
     {
         switch (state)
@@ -130,18 +176,22 @@ void homepage()
             state = isThereNext ? HOMEPAGE_NEXT : HOMEPAGE_SUMMARY;
             interval = isThereNext ? DELAY_NEXT : DELAY_SUMMARY;
             break;
-        case HOMEPAGE_NEXT:
-            lcd1.clear();
-            lcd1.setCursor(0, 0);
-            lcd1.write(nextEvent.category);
-            lcd1.print(bufTop);
-            lcd1.setCursor(0, 1);
-            lcd1.print(bufBottom);
 
+        case HOMEPAGE_NEXT:
+            if (isThereNext)
+            {
+                lcd1.clear();
+                lcd1.setCursor(0, 0);
+                lcd1.write(nextEvent.category);
+                lcd1.print(bufTop);
+                lcd1.setCursor(0, 1);
+                lcd1.print(bufBottom);
+            }
             lastStateChange = millis();
             state = HOMEPAGE_SUMMARY;
             interval = DELAY_SUMMARY;
             break;
+
         case HOMEPAGE_SUMMARY:
             lcd1.clear();
             lcd1.setCursor(0, 0);
@@ -153,6 +203,7 @@ void homepage()
             state = HOMEPAGE_UPCOMING;
             interval = DELAY_UPCOMING;
             break;
+
         case HOMEPAGE_NO_EVENT:
             lcd1.clear();
             lcd1.setCursor(0, 0);
