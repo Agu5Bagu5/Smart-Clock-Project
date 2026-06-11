@@ -13,6 +13,8 @@ extern const int btnLft;
 extern const int btnEtr;
 extern const int btnRmv;
 
+extern const int buzzerPin;
+
 // Free memory helper — declare here, define in main.cpp
 int freeMemory();
 

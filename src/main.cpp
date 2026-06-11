@@ -6,6 +6,8 @@
 #include "constant.h"
 #include "symbols.h"
 #include "data.h"
+#include "reminder.h"
+#include "buttonPressLogic.h"
 
 // ─── Button pins ─────────────────────────────────────────────────────────────
 // NOTE: subjects[], subjectCount, todaySchedules[], todayScheduleCount
@@ -15,6 +17,11 @@ const int btnRght = 8;
 const int btnLft = 9;
 const int btnEtr = 10;
 const int btnRmv = 11;
+
+RTC_DS3231 rtc;
+
+// ─── Buzzer pin ───────────────────────────────────────────────────────────────
+const int buzzerPin = 12;
 
 // ─── Free-memory helper (AVR-specific) ───────────────────────────────────────
 extern int __heap_start;
@@ -70,6 +77,9 @@ void setup()
   cleanupExpiredSchedules();
   getSchedules();
 
+  // Initialize reminder system
+  initReminder();
+
   // Debug: print free RAM over Serial so you can spot memory issues
   Serial.print(F("Free RAM after setup: "));
   Serial.println(freeMemory());
@@ -77,6 +87,24 @@ void setup()
 
 void loop()
 {
-  lcd2Main();
+  // Check for new reminders (highest priority, runs before LCD1 states)
+  checkReminders();
+
+  // Update buzzer timing (non-blocking, millis-based)
+  updateReminderBuzzer();
+
+  // Handle button dismiss during reminder
+  if (getCurrentReminderLevel() >= 0)
+  {
+    if (enterPressed() || removePressed())
+    {
+      dismissReminder();
+    }
+  }
+
+  // Update clock display (runs every loop, continues during reminders)
+  clockDisplay();
+
+  // Update LCD1 with priority to reminders
   lcd1Main();
 }
