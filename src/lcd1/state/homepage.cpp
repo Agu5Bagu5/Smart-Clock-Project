@@ -13,7 +13,6 @@ enum HomepageState
     HOMEPAGE_UPCOMING = 0,
     HOMEPAGE_NEXT = 1,
     HOMEPAGE_SUMMARY = 2,
-    HOMEPAGE_NO_EVENT = 3
 };
 
 enum StateDelay : unsigned long
@@ -102,7 +101,8 @@ void homepage()
         }
         else
         {
-            state = HOMEPAGE_NO_EVENT;
+            // No more events left; show summary screen.
+            state = HOMEPAGE_SUMMARY;
         }
     }
 
@@ -160,7 +160,7 @@ void homepage()
              countSummary, countSummary != 1 ? "s" : "");
     snprintf(bufSBottom, sizeof(bufSBottom), "%d left", countLeft);
 
-    if (millis() - lastStateChange >= interval || state == HOMEPAGE_NO_EVENT)
+    if (millis() - lastStateChange >= interval)
     {
         switch (state)
         {
@@ -202,14 +202,6 @@ void homepage()
             lastStateChange = millis();
             state = HOMEPAGE_UPCOMING;
             interval = DELAY_UPCOMING;
-            break;
-
-        case HOMEPAGE_NO_EVENT:
-            lcd1.clear();
-            lcd1.setCursor(0, 0);
-            lcd1.print("No events");
-            lcd1.setCursor(0, 1);
-            lcd1.print("for today");
             break;
         }
     }

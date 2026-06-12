@@ -9,53 +9,40 @@
 #include "symbols.h"
 #include "lcd1.h"
 
-// ─── Buzzer Configurations ────────────────────────────────────────────────────
-// DAY REMINDER: Lowest priority, auto-stop after 6 seconds
-static const BuzzerConfig buzzerDay = {
-    100,  // 100ms beep
-    2000, // 2000ms silence
-    6000  // 6 seconds total
-};
+// ─── Buzzer configurations ────────────────────────────────────────────────────
+// DAY REMINDER: gentle alert, auto-stops after 6 s
+static const BuzzerConfig buzzerDay = {100, 2000, 6000};
+// HOUR REMINDER: medium urgency, auto-stops after 20 s
+static const BuzzerConfig buzzerHour = {200, 500, 20000};
+// NOW REMINDER: urgent, auto-stops after 60 s
+static const BuzzerConfig buzzerNow = {500, 200, 60000};
 
-// HOUR REMINDER: Medium priority, auto-stop after 20 seconds, user dismissible
-static const BuzzerConfig buzzerHour = {
-    200,  // 200ms beep
-    500,  // 500ms silence
-    20000 // 20 seconds total
-};
+// ─── Module state ─────────────────────────────────────────────────────────────
 
-// NOW REMINDER: Highest priority, auto-stop after 60 seconds, user dismissible
-static const BuzzerConfig buzzerNow = {
-    500,  // 500ms beep
-    200,  // 200ms silence
-    60000 // 60 seconds total
-};
-
-// ─── Reminder State Variables ─────────────────────────────────────────────────
-
-// Trigger flags per schedule
+// Per-slot triggered flags (one struct per todaySchedules[] entry).
 static ReminderFlags reminderFlags[SCHEDULE_MAX_RAM];
 
-// Current active reminder
 static int8_t activeReminderScheduleIdx = -1;
 static ReminderLevel activeReminderLevel = REMINDER_DAY;
 static bool reminderActive = false;
 
-// Buzzer state
 static BuzzerState buzzerState = BUZZER_IDLE;
 static unsigned long buzzerStartTime = 0;
-static unsigned long buzzerLastToggleTime = 0;
 
-// LCD1 display state
+// Tracks whether lcd1 needs a full redraw.
+// Set true whenever reminder state changes; cleared inside drawReminderScreen().
 static bool reminderScreenDirty = false;
 
-// ─── Helper: Get buzzer config for reminder level ────────────────────────────
+// Tracks the second at which we last drew the screen so we only redraw once
+// per second (avoids hammering the I2C bus every loop iteration).
+static int8_t lastDrawnSecond = -1;
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 static const BuzzerConfig &getBuzzerConfig(ReminderLevel level)
 {
     switch (level)
     {
-    case REMINDER_DAY:
-        return buzzerDay;
     case REMINDER_HOUR:
         return buzzerHour;
     case REMINDER_NOW:
@@ -65,36 +52,26 @@ static const BuzzerConfig &getBuzzerConfig(ReminderLevel level)
     }
 }
 
-// ─── Helper: Calculate time difference in minutes ─────────────────────────────
-// Returns minutes until/since the given time
-static int16_t minutesUntilTime(byte scheduleHour, byte scheduleMinute,
-                                const DateTime &now)
-{
-    uint16_t scheduleTimeInMinutes = (uint16_t)scheduleHour * 60 + scheduleMinute;
-    uint16_t currentTimeInMinutes = (uint16_t)now.hour() * 60 + now.minute();
-
-    int16_t diff = scheduleTimeInMinutes - currentTimeInMinutes;
-    return diff;
-}
-
-// ─── Initialize Reminder System ────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// initReminder()  — call once in setup()
+// ─────────────────────────────────────────────────────────────────────────────
 void initReminder()
 {
-    // Set buzzer pin as OUTPUT
     pinMode(buzzerPin, OUTPUT);
     digitalWrite(buzzerPin, LOW);
 
-    // Initialize trigger flags to all false
     resetReminderFlags();
 
     activeReminderScheduleIdx = -1;
     reminderActive = false;
     buzzerState = BUZZER_IDLE;
-    reminderScreenDirty = true;
+    reminderScreenDirty = false;
+    lastDrawnSecond = -1;
 }
 
-// ─── Reset Reminder Trigger Flags ─────────────────────────────────────────────
-// Called at midnight to allow all reminders to trigger again
+// ─────────────────────────────────────────────────────────────────────────────
+// resetReminderFlags()  — call at midnight
+// ─────────────────────────────────────────────────────────────────────────────
 void resetReminderFlags()
 {
     for (byte i = 0; i < SCHEDULE_MAX_RAM; i++)
@@ -105,318 +82,312 @@ void resetReminderFlags()
     }
 }
 
-// ─── Check for Triggered Reminders ────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// checkReminders()  — call every loop iteration after lcd2Main()
+//
+// Trigger logic — each ScheduleRAM entry has:
+//   .flags = ON_TIME | ONE_HOUR_BEFORE | ONE_DAY_BEFORE   (ReminderFlag)
+//   .day   = 0 (today) | 1 (tomorrow)                     (set by getSchedules)
+//
+// getSchedules() already handles the advance-day decision:
+//   - Entries with .day==0 are events happening TODAY at .hour:.minute
+//   - Entries with .day==1 are tomorrow's events placed here so we can notify
+//     today at the same stored .hour:.minute
+//
+// We therefore only need to compare .hour:.minute against the current wall
+// clock, regardless of what .flags says about HOW far in advance to notify —
+// getSchedules() has already moved the entry to today's list at the right time.
+//
+// The .flags value tells us only which reminder LEVEL to display (urgency /
+// label), and which triggered-bit to set.
+// ─────────────────────────────────────────────────────────────────────────────
 void checkReminders()
 {
-    // If already active, don't check for new ones (user must dismiss or auto-timeout)
-    if (reminderActive && activeReminderScheduleIdx >= 0)
-    {
-        return;
-    }
+    if (reminderActive)
+        return; // one active reminder at a time
 
-    // Scan all today's schedules for reminders to trigger
-    int8_t highestPriorityIdx = -1;
-    ReminderLevel highestPriority = REMINDER_DAY;
+    byte nowH = nowTime.hour();
+    byte nowM = nowTime.minute();
+
+    int8_t bestIdx = -1;
+    ReminderLevel bestLevel = REMINDER_DAY;
 
     for (byte i = 0; i < todayScheduleCount; i++)
     {
-        byte flags = todaySchedules[i].flags;
+        const ScheduleRAM &s = todaySchedules[i];
 
-        // Skip inactive schedules
-        if (flags == FLAG_INACTIVE || flags == FLAG_END_OF_LIST)
+        // Only consider active entries
+        if (s.flags == FLAG_INACTIVE || s.flags == FLAG_END_OF_LIST)
             continue;
 
-        byte hour = todaySchedules[i].hour;
-        byte minute = todaySchedules[i].minute;
-        byte day = todaySchedules[i].day;
+        // ── Determine which reminder level applies and whether it has fired ──
+        ReminderLevel level;
+        bool alreadyFired;
 
-        int16_t minutesDiff;
-        ReminderLevel checkLevel = REMINDER_DAY;
-        bool shouldTrigger = false;
-
-        // Calculate time difference based on schedule day (today=0, tomorrow=1)
-        if (day == 0)
+        if (s.day == 1)
         {
-            // Today's schedule
-            minutesDiff = minutesUntilTime(hour, minute, nowTime);
+            // Tomorrow's event: this entry is the ONE_DAY_BEFORE notification.
+            // Fire at the stored hour:minute today.
+            level = REMINDER_DAY;
+            alreadyFired = reminderFlags[i].dayTriggered;
         }
-        else if (day == 1)
+        else // s.day == 0 — today's event
         {
-            // Tomorrow's schedule - calculate diff from tomorrow's perspective
-            minutesDiff = minutesUntilTime(hour, minute, tomorrowTime);
-        }
-        else
-        {
-            continue; // Invalid day value
-        }
-
-        // Check for reminders based on reminder flag
-        switch (flags)
-        {
-        case ON_TIME:
-            // Trigger at exact schedule time
-            if (minutesDiff >= -1 && minutesDiff <= 0)
+            switch (s.flags)
             {
-                if (!reminderFlags[i].nowTriggered)
-                {
-                    checkLevel = REMINDER_NOW;
-                    shouldTrigger = true;
-                }
+            case ON_TIME:
+                level = REMINDER_NOW;
+                alreadyFired = reminderFlags[i].nowTriggered;
+                break;
+            case ONE_HOUR_BEFORE:
+                level = REMINDER_HOUR;
+                alreadyFired = reminderFlags[i].hourTriggered;
+                break;
+            case ONE_DAY_BEFORE:
+                // ONE_DAY_BEFORE on a day==0 entry means the event is today but
+                // the user chose to be notified at the stored time, which
+                // getSchedules() resolved to today. Treat as ON_TIME urgency.
+                level = REMINDER_NOW;
+                alreadyFired = reminderFlags[i].nowTriggered;
+                break;
+            default:
+                continue;
             }
-            break;
-
-        case ONE_HOUR_BEFORE:
-            // Trigger 1 hour before (59-61 minutes)
-            if (minutesDiff >= 59 && minutesDiff <= 61)
-            {
-                if (!reminderFlags[i].hourTriggered)
-                {
-                    checkLevel = REMINDER_HOUR;
-                    shouldTrigger = true;
-                }
-            }
-            // Also trigger at exact time
-            else if (minutesDiff >= -1 && minutesDiff <= 0)
-            {
-                if (!reminderFlags[i].nowTriggered)
-                {
-                    checkLevel = REMINDER_NOW;
-                    shouldTrigger = true;
-                }
-            }
-            break;
-
-        case ONE_DAY_BEFORE:
-            // Trigger 1 day before (1439-1441 minutes, accounting for exact day transition)
-            // Simplified: if it's tomorrow's schedule, it's the "day before" reminder
-            if (day == 1 && minutesDiff >= 1380 && minutesDiff <= 1500)
-            {
-                if (!reminderFlags[i].dayTriggered)
-                {
-                    checkLevel = REMINDER_DAY;
-                    shouldTrigger = true;
-                }
-            }
-            // Trigger 1 hour before (59-61 minutes of the same day)
-            else if (day == 0 && minutesDiff >= 59 && minutesDiff <= 61)
-            {
-                if (!reminderFlags[i].hourTriggered)
-                {
-                    checkLevel = REMINDER_HOUR;
-                    shouldTrigger = true;
-                }
-            }
-            // Trigger at exact time
-            else if (day == 0 && minutesDiff >= -1 && minutesDiff <= 0)
-            {
-                if (!reminderFlags[i].nowTriggered)
-                {
-                    checkLevel = REMINDER_NOW;
-                    shouldTrigger = true;
-                }
-            }
-            break;
-
-        default:
-            break;
         }
 
-        // Track reminder with highest priority
-        if (shouldTrigger && checkLevel > highestPriority)
+        if (alreadyFired)
+            continue;
+
+        // ── Check wall-clock match (exact minute) ────────────────────────────
+        if (s.hour != nowH || s.minute != nowM)
+            continue;
+
+        // ── Keep the highest-priority hit ────────────────────────────────────
+        if (bestIdx < 0 || level > bestLevel)
         {
-            highestPriority = checkLevel;
-            highestPriorityIdx = i;
+            bestIdx = (int8_t)i;
+            bestLevel = level;
         }
     }
 
-    // If we found a reminder to trigger, activate it
-    if (highestPriorityIdx >= 0)
+    if (bestIdx < 0)
+        return; // nothing to fire
+
+    // ── Arm the reminder ─────────────────────────────────────────────────────
+    activeReminderScheduleIdx = bestIdx;
+    activeReminderLevel = bestLevel;
+    reminderActive = true;
+    buzzerStartTime = millis();
+    buzzerState = BUZZER_BEEPING;
+    reminderScreenDirty = true;
+    lastDrawnSecond = -1; // force immediate redraw
+
+    digitalWrite(buzzerPin, HIGH); // start first beep immediately
+
+    // Mark the relevant bit so this slot doesn't fire again today
+    switch (bestLevel)
     {
-        activeReminderScheduleIdx = highestPriorityIdx;
-        activeReminderLevel = highestPriority;
-        reminderActive = true;
-        buzzerStartTime = millis();
-        buzzerState = BUZZER_BEEPING;
-        buzzerLastToggleTime = millis();
-        reminderScreenDirty = true;
-
-        // Mark this reminder level as triggered
-        switch (highestPriority)
-        {
-        case REMINDER_DAY:
-            reminderFlags[highestPriorityIdx].dayTriggered = true;
-            break;
-        case REMINDER_HOUR:
-            reminderFlags[highestPriorityIdx].hourTriggered = true;
-            break;
-        case REMINDER_NOW:
-            reminderFlags[highestPriorityIdx].nowTriggered = true;
-            break;
-        }
+    case REMINDER_DAY:
+        reminderFlags[bestIdx].dayTriggered = true;
+        break;
+    case REMINDER_HOUR:
+        reminderFlags[bestIdx].hourTriggered = true;
+        break;
+    case REMINDER_NOW:
+        reminderFlags[bestIdx].nowTriggered = true;
+        break;
     }
+
+    // Force lcd1 to clear away whatever was on screen
+    lcd1.clear();
 }
 
-// ─── Update Buzzer Timing ─────────────────────────────────────────────────────
-// Manages beep/silence pattern and auto-timeout using millis()
+// ─────────────────────────────────────────────────────────────────────────────
+// updateReminderBuzzer()  — call every loop iteration
+// Non-blocking: uses millis() arithmetic only, no delay().
+// ─────────────────────────────────────────────────────────────────────────────
 void updateReminderBuzzer()
 {
-    if (!reminderActive || activeReminderScheduleIdx < 0)
+    if (!reminderActive)
     {
-        // No active reminder, keep buzzer off
         digitalWrite(buzzerPin, LOW);
         return;
     }
 
-    unsigned long currentTime = millis();
-    unsigned long elapsedTime = currentTime - buzzerStartTime;
-    const BuzzerConfig &config = getBuzzerConfig(activeReminderLevel);
+    const BuzzerConfig &cfg = getBuzzerConfig(activeReminderLevel);
+    unsigned long elapsed = millis() - buzzerStartTime;
 
-    // Check if total timeout reached - auto-stop
-    if (elapsedTime >= config.totalTimeout)
+    // Auto-dismiss when total timeout expires
+    if (elapsed >= cfg.totalTimeout)
     {
         digitalWrite(buzzerPin, LOW);
         reminderActive = false;
         activeReminderScheduleIdx = -1;
         buzzerState = BUZZER_IDLE;
-        reminderScreenDirty = true;
+        reminderScreenDirty = true; // let drawReminderScreen clear the screen
         return;
     }
 
-    // Calculate position in beep/silence cycle
-    uint16_t cycleLength = config.onDuration + config.offDuration;
-    uint16_t positionInCycle = elapsedTime % cycleLength;
+    // BUG FIX (original code): the original used a separate lastToggleTime and
+    // compared it against onDuration / offDuration separately, which meant the
+    // on→off transition happened after onDuration ms but the off→on transition
+    // also happened after onDuration ms (not offDuration).  Using modulo
+    // arithmetic on the total elapsed time is simpler and correct.
+    uint16_t cycle = cfg.onDuration + cfg.offDuration;
+    uint16_t position = (uint16_t)(elapsed % cycle);
+    bool shouldOn = (position < cfg.onDuration);
 
-    // Determine if we should be beeping
-    bool shouldBeep = (positionInCycle < config.onDuration);
-
-    // Update buzzer output if state changed
-    if (shouldBeep != (buzzerState == BUZZER_BEEPING))
+    bool currentlyOn = (buzzerState == BUZZER_BEEPING);
+    if (shouldOn != currentlyOn)
     {
-        if (shouldBeep)
-        {
-            digitalWrite(buzzerPin, HIGH);
-            buzzerState = BUZZER_BEEPING;
-        }
-        else
-        {
-            digitalWrite(buzzerPin, LOW);
-            buzzerState = BUZZER_SILENT;
-        }
+        buzzerState = shouldOn ? BUZZER_BEEPING : BUZZER_SILENT;
+        digitalWrite(buzzerPin, shouldOn ? HIGH : LOW);
     }
 }
 
-// ─── Draw Reminder Screen on LCD1 ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// drawReminderScreen()  — called from lcd1Main() when a reminder is active
+//
+// Handles both drawing AND dismiss button polling so that everything related
+// to the active reminder is in one place.  lcd1Main() just calls this and
+// returns if getCurrentReminderLevel() >= 0.
+//
+// LCD layout:
+//   Row 0:  level label (left) + event time (right)
+//   Row 1:  category icon + space + subject name
+// ─────────────────────────────────────────────────────────────────────────────
 void drawReminderScreen()
 {
     if (!reminderActive || activeReminderScheduleIdx < 0)
+        return;
+
+    // ── Dismiss on ENTER or REMOVE ───────────────────────────────────────────
+    if (enterPressed() || removePressed())
     {
+        dismissReminder();
+        // reminderActive is now false; lcd1Main() will fall through to the
+        // normal state dispatch on the very next call.
         return;
     }
 
-    // Only update if state changed (to avoid flickering)
-    if (!reminderScreenDirty)
-    {
+    // ── Throttle redraws to once per second ──────────────────────────────────
+    // The buzzer toggles at 200–500 ms; we don't need to redraw that fast.
+    // Only redraw when the second ticks over or when the state just changed.
+    int8_t nowSec = (int8_t)nowTime.second();
+    if (!reminderScreenDirty && nowSec == lastDrawnSecond)
         return;
-    }
+
     reminderScreenDirty = false;
+    lastDrawnSecond = nowSec;
 
-    int8_t idx = activeReminderScheduleIdx;
-    byte subjectId = todaySchedules[idx].subject;
+    const ScheduleRAM &s = todaySchedules[activeReminderScheduleIdx];
 
-    // Get subject name from subjectRAMs[]
-    char subjectName[14];
-    strcpy_P(subjectName, PSTR("Unknown"));
-
-    for (byte s = 0; s < subjectCount; s++)
-    {
-        if (subjectRAMs[s].subjectId == subjectId)
-        {
-            // Get full subject name from EEPROM via getSubjectName()
-            const char *name = getSubjectName(s);
-            if (name != nullptr)
-            {
-                strncpy(subjectName, name, sizeof(subjectName) - 1);
-                subjectName[sizeof(subjectName) - 1] = '\0';
-            }
-            break;
-        }
-    }
-
-    // Clear LCD1 and draw reminder screen
-    lcd1.clear();
-
-    // Line 1: Reminder type
+    // ── Row 0: level label (cols 0-9) + time (cols 10-15) ───────────────────
+    // Label
+    lcd1.setCursor(0, 0);
     switch (activeReminderLevel)
     {
     case REMINDER_DAY:
-        lcd1.setCursor(1, 0);
-        lcd1.print(F("Tomorrow Event"));
+        lcd1.print("Tomorrow  ");
         break;
     case REMINDER_HOUR:
-        lcd1.setCursor(2, 0);
-        lcd1.print(F("In 1 Hour"));
+        lcd1.print("In 1 Hour ");
         break;
     case REMINDER_NOW:
-        lcd1.setCursor(6, 0);
-        lcd1.print(F("NOW"));
+        lcd1.print("NOW       ");
         break;
     }
 
-    // Line 2: Category icon + Subject name
+    // Event time right-aligned in cols 10-15: "HH:MM"
+    char timeBuf[7];
+    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", s.hour, s.minute);
+    lcd1.setCursor(10, 0);
+    lcd1.print(timeBuf);
+
+    // ── Row 1: category icon + subject name ──────────────────────────────────
     lcd1.setCursor(0, 1);
 
-    // Print category icon (using symbols)
-    byte category = todaySchedules[idx].category;
-    switch (category)
+    switch (s.category)
     {
     case HOMEWORK:
-        lcd1.write(PENCIL); // Pencil icon for homework
+        lcd1.write(PENCIL);
         break;
     case EXAM:
-        lcd1.write(WARNING); // Warning icon for exam
+        lcd1.write(WARNING);
         break;
     case PERSONAL:
-        lcd1.write(PERSON); // Person icon for personal
-        break;
-    case OTHER:
-        lcd1.write(BELL); // Bell icon for other
+        lcd1.write(PERSON);
         break;
     default:
         lcd1.write(BELL);
         break;
     }
 
-    // Print subject name (pad to 14 chars)
-    lcd1.print(" ");
-    lcd1.print(subjectName);
+    lcd1.print(' ');
+
+    // BUG FIX (original reminder.cpp): the loop used getSubjectName(s) where
+    // s was the RAM array index (loop counter 0..subjectCount-1).
+    // getSubjectName() expects the EEPROM slot index (subjectRAMs[i].index),
+    // not the subjectRAMs[] position.  Every other call site in the project
+    // passes subjectRAMs[i].index — we match that here.
+    const char *name = nullptr;
+    for (byte i = 0; i < subjectCount; i++)
+    {
+        if (subjectRAMs[i].subjectId == s.subject)
+        {
+            name = getSubjectName(subjectRAMs[i].index); // ← correct index
+            break;
+        }
+    }
+
+    // Space-pad row 1 from col 2 to col 15 (14 chars)
+    char row1[15];
+    memset(row1, ' ', 14);
+    row1[14] = '\0';
+
+    if (name)
+    {
+        byte len = (byte)strlen(name);
+        if (len > 14)
+            len = 14;
+        memcpy(row1, name, len);
+    }
+    else
+    {
+        memcpy(row1, "???", 3);
+    }
+
+    lcd1.print(row1);
 }
 
-// ─── Dismiss Current Reminder ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// dismissReminder()
+// ─────────────────────────────────────────────────────────────────────────────
 void dismissReminder()
 {
     if (!reminderActive)
-    {
         return;
-    }
 
     digitalWrite(buzzerPin, LOW);
     reminderActive = false;
     activeReminderScheduleIdx = -1;
     buzzerState = BUZZER_IDLE;
-    reminderScreenDirty = true;
+    reminderScreenDirty = false;
+    lastDrawnSecond = -1;
+
+    lcd1.clear(); // hand lcd1 back to the normal state machine cleanly
 }
 
-// ─── Get Current Active Reminder Level ────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Accessors
+// ─────────────────────────────────────────────────────────────────────────────
 int8_t getCurrentReminderLevel()
 {
-    if (!reminderActive || activeReminderScheduleIdx < 0)
-    {
-        return -1;
-    }
-    return (int8_t)activeReminderLevel;
+    return (reminderActive && activeReminderScheduleIdx >= 0)
+               ? (int8_t)activeReminderLevel
+               : -1;
 }
 
-// ─── Get Current Active Schedule Index ────────────────────────────────────────
 int8_t getCurrentReminderScheduleIndex()
 {
     return activeReminderScheduleIdx;

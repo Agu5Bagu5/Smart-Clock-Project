@@ -7,20 +7,18 @@
 #include "symbols.h"
 #include "data.h"
 #include "reminder.h"
-#include "buttonPressLogic.h"
 
 // ─── Button pins ─────────────────────────────────────────────────────────────
-// NOTE: subjects[], subjectCount, todaySchedules[], todayScheduleCount
-// are defined in getSubjects.cpp / getSchedule.cpp respectively.
-// They are extern-declared in data.h — do NOT redefine them here.
-const int btnRght = 8;
-const int btnLft = 9;
-const int btnEtr = 10;
-const int btnRmv = 11;
+const int btnRght = 3;
+const int btnLft = 10;
+const int btnEtr = 6;
+const int btnRmv = 12;
 
+// RTC is used by lcd2Main/clockDisplay and extern-declared in constant.h
 RTC_DS3231 rtc;
 
-// ─── Buzzer pin ───────────────────────────────────────────────────────────────
+// Buzzer on pin 12 — first free digital pin after the four button inputs.
+// Wire piezo/buzzer between pin 12 and GND.
 const int buzzerPin = 12;
 
 // ─── Free-memory helper (AVR-specific) ───────────────────────────────────────
@@ -42,11 +40,13 @@ void setup()
 
   Wire.begin();
 
-  // LCD init
+  // // LCD init — must happen before initSymbols() which calls createChar()
   lcd1.init();
   lcd1.backlight();
   lcd2.init();
   lcd2.backlight();
+
+  // Serial.println("Setup started");
 
   // Button pins
   pinMode(btnRght, INPUT);
@@ -54,7 +54,7 @@ void setup()
   pinMode(btnEtr, INPUT);
   pinMode(btnRmv, INPUT);
 
-  // Custom symbols (must happen after lcd1.init())
+  // Custom character bitmaps loaded into lcd1 CGRAM
   initSymbols();
 
   // RTC
@@ -67,44 +67,41 @@ void setup()
   }
   if (rtc.lostPower())
   {
-    // Set to compile time if clock lost power
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
-  // Load cached data from EEPROM
+  // Load schedule and subject caches from external EEPROM
   getSubjects();
-
   cleanupExpiredSchedules();
   getSchedules();
 
-  // Initialize reminder system
+  // Initialise reminder subsystem (sets buzzerPin OUTPUT, clears flags)
   initReminder();
 
-  // Debug: print free RAM over Serial so you can spot memory issues
   Serial.print(F("Free RAM after setup: "));
   Serial.println(freeMemory());
 }
 
 void loop()
 {
-  // Check for new reminders (highest priority, runs before LCD1 states)
-  checkReminders();
+  Serial.println("overall: oke");
+  // ── STEP 1: refresh nowTime from RTC ─────────────────────────────────────
+  // BUG FIX: lcd2Main() / clockDisplay() MUST run first every iteration.
+  // It is the only place that calls nowTime = rtc.now().
+  // checkReminders() reads nowTime to decide whether to fire — if lcd2Main()
+  // ran after it, the first loop iteration would check against an uninitialised
+  // DateTime (the RTClib epoch, ~2000-01-01 00:00:00), potentially triggering
+  // every schedule at once on startup.
+  lcd2Main();
 
-  // Update buzzer timing (non-blocking, millis-based)
-  updateReminderBuzzer();
+  // ── STEP 2: check / drive the reminder subsystem ─────────────────────────
+  // nowTime is guaranteed fresh from Step 1.
+  checkReminders();       // scan todaySchedules[], arm if due
+  updateReminderBuzzer(); // non-blocking beep pattern via millis()
 
-  // Handle button dismiss during reminder
-  if (getCurrentReminderLevel() >= 0)
-  {
-    if (enterPressed() || removePressed())
-    {
-      dismissReminder();
-    }
-  }
-
-  // Update clock display (runs every loop, continues during reminders)
-  clockDisplay();
-
-  // Update LCD1 with priority to reminders
+  // ── STEP 3: update lcd1 ───────────────────────────────────────────────────
+  // lcd1Main() handles its own reminder priority: when a reminder is active
+  // it calls drawReminderScreen() (which also handles dismiss buttons) and
+  // returns without running any normal state function.
   lcd1Main();
 }
